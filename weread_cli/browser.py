@@ -375,7 +375,7 @@ class CDPBrowserManager:
     def go_to_chapter(self, chapter_uid: int, chapter_title: str = "", chapter_index: int = 0) -> Optional[str]:
         """
         跳转到指定章节。
-        不打开目录面板，通过翻页或 JS 内部调用到达目标章节。
+        不打开目录面板，通过 URL 直接导航或翻页到达目标章节。
         """
         if not self.is_alive:
             return None
@@ -386,9 +386,6 @@ class CDPBrowserManager:
 
             # 确保 Canvas 钩子存在
             self._inject_canvas_hook()
-
-            # 清空旧 Canvas 文本
-            self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
 
             if chapter_index == 0:
                 # 首章：自动点击通过前导页（封面/版权/简介）
@@ -407,73 +404,58 @@ class CDPBrowserManager:
                 self._wait_for_canvas_text(timeout_ms=15000)
                 extracted = self._extract_chapter_title_from_canvas()
                 self.state.chapter_uid = chapter_uid
+                self.state.chapter_index = 0
                 return extracted or chapter_title or "未知章节"
 
-            # 非首章：尝试 JS 内部跳转（不需要打开目录）
-            jumped = self._page.evaluate("""(uid) => {
-                if (window.readController && typeof window.readController.goChapter === 'function') {
-                    window.readController.goChapter(uid);
-                    return true;
-                }
-                if (window.routerManager && typeof window.routerManager.goReader === 'function') {
-                    window.routerManager.goReader({ chapterUid: uid });
-                    return true;
-                }
-                return false;
-            }""", chapter_uid)
+            # 非首章：直接 URL 导航到目标章节
+            # 微信读书 URL 格式: /web/reader/{book_hash}{chapter_hash}
+            book_hash = weread_hash(self.state.book_id)
+            chapter_hash = weread_hash(chapter_uid)
+            target_url = f"https://weread.qq.com/web/reader/{book_hash}{chapter_hash}"
 
-            if not jumped:
-                # JS 跳转不可用，使用翻页方式到达目标章节
-                print(f"  ⚠️ JS 跳转不可用，翻页到第 {chapter_index + 1} 章")
-                
-                # 先确保不在封面页
-                for _ in range(10):
-                    btn = self._find_text('开始阅读') or self._find_text('阅读') or self._find_text('下一页')
-                    if not btn:
-                        break
-                    btn.click(force=True, timeout=2000)
-                    self._page.wait_for_timeout(500)
-                
-                # 通过翻页到达目标章节
-                target = chapter_index
-                reached = 0
-                max_pages = target * 3  # 每章最多3页
-                page_count = 0
-                
-                while reached < target and page_count < max_pages:
-                    # 先检查是否有"下一章"按钮（章节末尾）
-                    next_ch_btn = self._find_text('下一章')
-                    if next_ch_btn:
-                        self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
-                        next_ch_btn.click(force=True, timeout=2000)
-                        reached += 1
-                        self._page.wait_for_timeout(800)
-                        continue
-                    
-                    btn = self._find_text('下一页')
-                    if btn:
-                        self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
-                        btn.click(force=True, timeout=2000)
-                        self._page.wait_for_timeout(500)
-                        page_count += 1
-                    else:
-                        break
-                
-                print(f"  📄 翻页完成: 到达第 {reached + 1} 章（目标 {target + 1}）")
-            
-            # 等待 Canvas 渲染
-            self._page.wait_for_timeout(2000)
+            print(f"  📖 导航到第 {chapter_index + 1} 章 (uid={chapter_uid})")
+
+            # 清空旧 Canvas 文本
+            self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+
+            # 直接导航
+            self._page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+
+            # 等待页面 JS 初始化完成
+            self._page.wait_for_timeout(1500)
+
+            # 重新注入 Canvas 钩子（导航后可能丢失）
             self._inject_canvas_hook()
             self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
-            self._wait_for_canvas_text(timeout_ms=15000)
-            self._page.wait_for_timeout(1000)
 
-            # 调试
+            # 等待 Canvas 正文渲染
+            canvas_ready = self._wait_for_canvas_text(timeout_ms=15000)
+
+            if not canvas_ready:
+                # Canvas 没有捕获到文本，可能是页面未完全渲染
+                # 尝试多等一会
+                self._page.wait_for_timeout(3000)
+                self._inject_canvas_hook()
+                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                # 模拟点击页面触发渲染
+                self._page.mouse.click(600, 400)
+                self._page.wait_for_timeout(2000)
+                self._wait_for_canvas_text(timeout_ms=10000)
+
+            # 调试信息
             count = self._page.evaluate("() => (window.__CANVAS_TEXT__ || []).length")
-            print(f"  🔍 Canvas 捕获: {count} 条文本, chapter_uid={chapter_uid}")
+            print(f"  🔍 Canvas 捕获: {count} 条文本")
+
+            if count < 5:
+                # Canvas 文本太少，可能是目录面板或其他覆盖层
+                # 截图调试
+                debug_path = f"/tmp/weread_debug_ch{chapter_index}.png"
+                self._page.screenshot(path=debug_path)
+                print(f"  ⚠️ Canvas 文本过少，已截图: {debug_path}")
 
             extracted_title = self._extract_chapter_title_from_canvas()
             self.state.chapter_uid = chapter_uid
+            self.state.chapter_index = chapter_index
 
             return extracted_title or chapter_title or "未知章节"
 
