@@ -90,82 +90,117 @@ class QRLogin:
                 # 获取二维码
                 print("[5/5] 提取二维码...")
                 
-                qr_info = page.evaluate("""() => {
-                    // 查找 base64 编码的二维码图片
+                # 优先尝试获取二维码 URL
+                qr_data = page.evaluate("""() => {
+                    // 方法1：查找包含二维码 URL 的 img 标签
                     const images = document.querySelectorAll('img');
                     for (const img of images) {
                         const src = img.getAttribute('src') || '';
+                        // 微信登录二维码 URL 通常包含 qrconnect 或 wx 等关键词
+                        if (src.includes('qrconnect') || src.includes('/connect/qrcode/') || 
+                            (src.includes('open.weixin') && src.includes('uuid'))) {
+                            return { type: 'url', data: src };
+                        }
+                    }
+                    
+                    // 方法2：查找 base64 编码的二维码图片
+                    for (const img of images) {
+                        const src = img.getAttribute('src') || '';
                         if (src.startsWith('data:image/') && img.width > 100) {
-                            return {
-                                dataUrl: src,
-                                width: img.width,
-                                height: img.height
-                            };
+                            return { type: 'base64', data: src };
                         }
                     }
                     return null;
                 }""")
                 
-                if not qr_info:
+                if not qr_data:
                     print("❌ 无法获取二维码")
                     browser.close()
                     return False
                 
-                # 处理二维码
-                print(f"\n处理二维码图片 ({qr_info['width']}x{qr_info['height']})...")
+                # 处理二维码数据
+                qr_img_data = None
+                qr_url = None
                 
-                if qr_info['dataUrl'].startswith('data:image'):
-                    base64_match = re.search(r'data:image/\w+;base64,([^,]+)', qr_info['dataUrl'])
-                    if base64_match:
-                        qr_img_data = base64.b64decode(base64_match.group(1))
-                        print(f"✅ 解码成功，图片大小：{len(qr_img_data)} 字节")
-                    else:
-                        print("❌ 无法解析 base64 图片")
-                        browser.close()
-                        return False
+                if qr_data['type'] == 'url':
+                    # 直接使用 URL，用 qrcode 库生成终端二维码
+                    qr_url = qr_data['data']
+                    print(f"✅ 获取到二维码 URL")
                 else:
-                    qr_img_resp = httpx.get(qr_info['dataUrl'], timeout=10)
-                    if qr_img_resp.status_code == 200:
-                        qr_img_data = qr_img_resp.content
+                    # base64 图片数据
+                    print(f"\n处理二维码图片...")
+                    if qr_data['data'].startswith('data:image'):
+                        base64_match = re.search(r'data:image/\w+;base64,([^,]+)', qr_data['data'])
+                        if base64_match:
+                            qr_img_data = base64.b64decode(base64_match.group(1))
+                            print(f"✅ 解码成功，图片大小：{len(qr_img_data)} 字节")
+                        else:
+                            print("❌ 无法解析 base64 图片")
+                            browser.close()
+                            return False
                     else:
-                        print(f"❌ 下载失败：{qr_img_resp.status_code}")
-                        browser.close()
-                        return False
+                        qr_img_resp = httpx.get(qr_data['data'], timeout=10)
+                        if qr_img_resp.status_code == 200:
+                            qr_img_data = qr_img_resp.content
+                        else:
+                            print(f"❌ 下载失败：{qr_img_resp.status_code}")
+                            browser.close()
+                            return False
                 
                 # 显示二维码到终端
-                from PIL import Image
-                from io import BytesIO
+                print()
+                print("  请打开微信 → 扫一扫 → 扫描以下二维码：")
+                print()
                 
-                qr_image = Image.open(BytesIO(qr_img_data))
-                qr_image = qr_image.convert('L')  # 转灰度
-                qr_image = qr_image.resize((33, 33), Image.NEAREST)  # 缩小到适合终端的尺寸
-
-                # 使用 Unicode 块字符将图片转为终端 ASCII 艺术
-                # 使用两个字符高度来补偿终端字符的宽高比
-                pixels = qr_image.load()
-                width, height = qr_image.size
-                ascii_art = []
-                for y in range(0, height, 2):
-                    line = ""
-                    for x in range(width):
-                        top = pixels[x, y] if y < height else 255
-                        bottom = pixels[x, y + 1] if y + 1 < height else 255
-                        # 使用 Unicode 半块字符，上方黑色/下方白色
-                        if top < 128 and bottom < 128:
-                            line += "█"  # 全黑
-                        elif top < 128 and bottom >= 128:
-                            line += "▀"  # 上半黑
-                        elif top >= 128 and bottom < 128:
-                            line += "▄"  # 下半黑
-                        else:
-                            line += " "  # 全白
-                    ascii_art.append(line)
-
-                print()
-                print("  请用微信扫一扫以下二维码：")
-                print()
-                for line in ascii_art:
-                    print(f"  {line}")
+                if qr_url:
+                    # 有 URL，用 qrcode 库生成标准终端二维码
+                    import qrcode
+                    qr = qrcode.QRCode(
+                        version=None,
+                        error_correction=qrcode.constants.ERROR_CORRECT_H,
+                        box_size=1,
+                        border=2,
+                    )
+                    qr.add_data(qr_url)
+                    qr.make(fit=True)
+                    qr.print_ascii(tty=True)
+                else:
+                    # 只有图片数据，用 PIL 渲染
+                    from PIL import Image
+                    from io import BytesIO
+                    
+                    pil_image = Image.open(BytesIO(qr_img_data))
+                    pil_image = pil_image.convert('L')
+                    
+                    # 缩放到合适大小
+                    scale = 33
+                    pil_image = pil_image.resize((scale, scale), Image.NEAREST)
+                    
+                    pixels = pil_image.load()
+                    width, height = pil_image.size
+                    
+                    # 添加白边
+                    border = 2
+                    for _ in range(border):
+                        print("  " + " " * width)
+                    
+                    for y in range(0, height, 2):
+                        line = ""
+                        for x in range(width):
+                            top = pixels[x, y] if y < height else 255
+                            bottom = pixels[x, y + 1] if y + 1 < height else 255
+                            if top < 128 and bottom < 128:
+                                line += "█"
+                            elif top < 128 and bottom >= 128:
+                                line += "▀"
+                            elif top >= 128 and bottom < 128:
+                                line += "▄"
+                            else:
+                                line += " "
+                        print("  " + line)
+                    
+                    for _ in range(border):
+                        print("  " + " " * width)
                 print()
                 
                 # 轮询登录状态
