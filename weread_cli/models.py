@@ -14,6 +14,8 @@ class Book:
     cover_url: str = ""
     progress: int = 0
     last_read_chapter: str = ""
+    # 远端阅读进度的章节 UID（用于定位起始章节）
+    last_chapter_uid: int = 0
     
     def __str__(self):
         progress_str = f"{self.progress}%" if self.progress > 0 else "未读"

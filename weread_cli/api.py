@@ -170,13 +170,17 @@ class WeReadAPI:
                     book_id = bp.get("bookId", "")
                     info = books_info.get(book_id, {})
 
+                    # 获取远端阅读进度的章节 UID
+                    chapter_uid = bp.get("chapterUid", 0) or info.get("chapterUid", 0)
+
                     books.append(Book(
                         book_id=book_id,
                         title=info.get("title", "Unknown"),
                         author=info.get("author", "Unknown"),
                         cover_url=info.get("cover", ""),
                         progress=bp.get("progress", 0),
-                        last_read_chapter=info.get("lastChapterTitle", "")
+                        last_read_chapter=info.get("lastChapterTitle", ""),
+                        last_chapter_uid=chapter_uid,
                     ))
         except Exception as e:
             print(f"❌ 获取书架失败：{e}")

@@ -215,31 +215,44 @@ class WeReadCLI:
             else:
                 console.print("[yellow]⚠️  无效序号[/yellow]\n")
 
-    def _load_book_for_reading(self, book: Book, start_chapter: int = 0):
+    def _load_book_for_reading(self, book: Book, start_chapter: int = -1):
         """加载一本书准备阅读
 
         Args:
             book: 书籍对象
-            start_chapter: 起始章节索引，默认 0
+            start_chapter: 起始章节索引，-1 表示自动从远端进度恢复
         """
         self.current_book = book
         console.print(f"\n[green]✅ 已选择：{book.title}[/green]")
 
         # 获取章节列表
         self.current_chapters = self.api.get_chapters(book.book_id)
-        # 确保章节索引合法
-        self.current_chapter_index = max(0, min(start_chapter, len(self.current_chapters) - 1)) if self.current_chapters else 0
-
-        if self.current_chapters:
-            console.print(f"共 {len(self.current_chapters)} 章")
-            if self.current_chapter_index > 0:
-                console.print(f"[yellow]📌 从上次阅读位置恢复：第 {self.current_chapter_index + 1} 章[/yellow]\n")
-            else:
-                console.print()
-            # 直接进入阅读模式
-            self._enter_reading_mode()
-        else:
+        if not self.current_chapters:
             console.print("[yellow]⚠️  无法获取章节列表[/yellow]\n")
+            return
+
+        # 确定起始章节索引
+        if start_chapter >= 0:
+            # 显式指定（从本地状态恢复）
+            self.current_chapter_index = min(start_chapter, len(self.current_chapters) - 1)
+        elif book.last_chapter_uid > 0:
+            # 从远端阅读进度自动定位
+            uid_str = str(book.last_chapter_uid)
+            for i, ch in enumerate(self.current_chapters):
+                if ch.chapter_id == uid_str:
+                    self.current_chapter_index = i
+                    break
+            else:
+                self.current_chapter_index = 0
+
+        console.print(f"共 {len(self.current_chapters)} 章")
+        if self.current_chapter_index > 0:
+            console.print(f"[yellow]📌 从远端进度恢复：第 {self.current_chapter_index + 1} 章[/yellow]\n")
+        else:
+            console.print()
+
+        # 直接进入阅读模式
+        self._enter_reading_mode()
 
     # ── 选择书籍 ────────────────────────────────────────────
 
