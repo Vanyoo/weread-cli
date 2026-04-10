@@ -386,6 +386,7 @@ class WeReadCLI:
     def _reading_loop(self):
         """阅读主循环"""
         browser = self.api._browser
+        first_open = True  # 首次打开：直接从浏览器提取，不走 API
         browser_navigated = False  # 标记是否已通过浏览器导航
 
         while True:
@@ -393,8 +394,14 @@ class WeReadCLI:
                 chapter = self.current_chapters[self.current_chapter_index] if self.current_chapter_index < len(self.current_chapters) else None
 
                 # 获取内容
-                if browser_navigated:
-                    # 浏览器已经导航过了，直接提取当前页面内容
+                if first_open:
+                    # 首次打开：_enter_reading_mode() 已通过 navigate_to_book() 打开书籍页面，
+                    # 直接从浏览器当前页面提取内容（Canvas 钩子），跳过 API 章节加载
+                    raw = browser.get_content_with_title()
+                    browser_navigated = True  # 后续同一章内的翻页也从浏览器提取
+                    first_open = False
+                elif browser_navigated:
+                    # 浏览器已经导航过了（翻页/跳转章节后），直接提取当前页面内容
                     raw = browser.get_content_with_title()
                     browser_navigated = False
                 elif chapter:
@@ -498,7 +505,7 @@ class WeReadCLI:
                     menu_items.append("  [dim]n[/dim] - 已是最后一章")
                 menu_items.append("  [cyan]p[/cyan] - 上一章" if self.current_chapter_index > 0 else "  [dim]p[/dim] - 已是第一章")
                 menu_items.append("  [cyan]f[/cyan] - 下一页")
-                menu_items.append("  [cyan]b[/cyan] - 上一页")
+                menu_items.append("  [cyan]b[/cyan] - 上一页")  # 始终显示，浏览器会处理边界
                 menu_items.append("  [cyan]c[/cyan] - 章节列表")
                 menu_items.append("  [cyan]q[/cyan] - 返回主菜单")
                 
@@ -686,9 +693,12 @@ class WeReadCLI:
                             page -= 1
                             continue
                 else:
-                    # 最后一页
+                    # 最后一页：始终显示 上一页 选项
                     choices = [""]
-                    hints = "Enter 继续"
+                    hints = "Enter 下一章"
+                    if page > 0:
+                        choices.append("b")
+                        hints += "，b 上一页"
                     if has_prev_chapter:
                         choices.append("p")
                         hints += "，p 上一章"
@@ -705,6 +715,10 @@ class WeReadCLI:
                         return "prev_chapter"
                     elif next_action == "n":
                         return "next_chapter"
+                    elif next_action == "b":
+                        if page > 0:
+                            page -= 1
+                            continue
 
                 page += 1
 
