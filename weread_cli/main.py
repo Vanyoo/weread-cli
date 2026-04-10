@@ -235,6 +235,16 @@ class WeReadCLI:
         if start_chapter >= 0:
             # 显式指定（从本地状态恢复）
             self.current_chapter_index = min(start_chapter, len(self.current_chapters) - 1)
+            # 但远端进度可能更靠后，取两者最大值防止本地缓存过时
+            if book.last_chapter_uid > 0:
+                uid_str = str(book.last_chapter_uid)
+                for i, ch in enumerate(self.current_chapters):
+                    if ch.chapter_id == uid_str:
+                        remote_index = i
+                        if remote_index > self.current_chapter_index:
+                            self.current_chapter_index = remote_index
+                            console.print(f"[yellow]📌 远端进度更新：第 {self.current_chapter_index + 1} 章（本地缓存已过时）[/yellow]\n")
+                        break
         elif book.last_chapter_uid > 0:
             # 从远端阅读进度自动定位
             uid_str = str(book.last_chapter_uid)
@@ -247,7 +257,7 @@ class WeReadCLI:
 
         console.print(f"共 {len(self.current_chapters)} 章")
         if self.current_chapter_index > 0:
-            console.print(f"[yellow]📌 从远端进度恢复：第 {self.current_chapter_index + 1} 章[/yellow]\n")
+            console.print(f"[yellow]📌 从第 {self.current_chapter_index + 1} 章开始[/yellow]\n")
         else:
             console.print()
 
@@ -727,13 +737,17 @@ class WeReadCLI:
                     state = _load_reading_state()
                     if state:
                         console.print(f"[yellow]📌 发现上次阅读记录：{state['title']}[/yellow]")
-                        # 创建 Book 对象并加载
-                        book = Book(
-                            book_id=state["book_id"],
-                            title=state["title"],
-                            author=state["author"],
-                        )
-                        self._load_book_for_reading(book, start_chapter=state["chapter_index"])
+                        # 查询远端最新进度，确保不会用旧的本地缓存覆盖远端
+                        remote_book = self.api.get_book_progress(state["book_id"])
+                        if remote_book:
+                            self._load_book_for_reading(remote_book, start_chapter=state["chapter_index"])
+                        else:
+                            book = Book(
+                                book_id=state["book_id"],
+                                title=state["title"],
+                                author=state["author"],
+                            )
+                            self._load_book_for_reading(book, start_chapter=state["chapter_index"])
                     else:
                         console.print("[yellow]⚠️  还没有阅读记录，请从书架或搜索中选择[/yellow]\n")
             elif choice == "4":

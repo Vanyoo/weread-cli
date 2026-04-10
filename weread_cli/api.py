@@ -186,6 +186,34 @@ class WeReadAPI:
             print(f"❌ 获取书架失败：{e}")
         return books
 
+    def get_book_progress(self, book_id: str) -> Optional[Book]:
+        """
+        获取单本书的阅读进度（轻量请求，复用书架 API 返回）。
+        
+        用于选项3恢复时获取最新远端进度。
+        """
+        try:
+            resp = self.client.get(f"{self.BASE_URL}/web/shelf/sync")
+            if resp.status_code == 200:
+                data = resp.json()
+                book_progress = data.get("bookProgress", [])
+                books_list = data.get("books", [])
+                books_info = {b["bookId"]: b for b in books_list if "bookId" in b}
+
+                for bp in book_progress:
+                    if bp.get("bookId") == book_id:
+                        info = books_info.get(book_id, {})
+                        chapter_uid = bp.get("chapterUid", 0) or info.get("chapterUid", 0)
+                        return Book(
+                            book_id=book_id,
+                            title=info.get("title", "Unknown"),
+                            author=info.get("author", "Unknown"),
+                            last_chapter_uid=chapter_uid,
+                        )
+        except Exception as e:
+            print(f"❌ 获取书籍进度失败：{e}")
+        return None
+
     def get_chapters(self, book_id: str) -> List[Chapter]:
         """
         获取章节列表。
