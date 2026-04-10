@@ -16,6 +16,7 @@ import os
 import re
 import time
 import hashlib
+import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field
@@ -204,6 +205,10 @@ class CDPBrowserManager:
                     ])
 
                 self._page = self._context.new_page()
+            
+            # 最小化浏览器窗口（macOS）
+            if self.mode == "headed":
+                self._minimize_window()
             
             # 注入 Canvas 文本拦截脚本
             # 微信读书使用 Canvas 渲染正文，通过拦截 fillText 可以提取文本
@@ -900,6 +905,27 @@ class CDPBrowserManager:
             return False
 
     # ── 辅助方法 ─────────────────────────────────────────────
+
+    def _minimize_window(self) -> None:
+        """最小化浏览器窗口（macOS）"""
+        try:
+            # 等待窗口出现
+            time.sleep(0.5)
+            subprocess.run([
+                'osascript', '-e',
+                'tell application "System Events"\n'
+                '  set procs to every process whose name contains "Chromium"\n'
+                '  repeat with proc in procs\n'
+                '    set windows to every window of proc\n'
+                '    if (count of windows) > 0 then\n'
+                '      set miniaturized of first window of proc to true\n'
+                '      exit repeat\n'
+                '    end if\n'
+                '  end repeat\n'
+                'end tell'
+            ], capture_output=True, timeout=5)
+        except Exception:
+            pass  # 最小化失败不影响后续流程
 
     def screenshot(self, path: str = "/tmp/weread_page.png"):
         """截图当前页面（调试用）"""

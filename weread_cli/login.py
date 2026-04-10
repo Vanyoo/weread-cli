@@ -2,9 +2,12 @@
 """二维码登录 —— 微信读书 Web 端"""
 
 import json
+import os
 import time
 import re
 import base64
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -21,18 +24,89 @@ class QRLogin:
         """浏览器登录（终端二维码展示）"""
         return self.login_via_qr()
     
+    def _display_qr_terminal(self, qr_img_data: bytes) -> None:
+        """在终端用 ASCII 艺术渲染二维码"""
+        from PIL import Image
+        from io import BytesIO
+        
+        qr_image = Image.open(BytesIO(qr_img_data))
+        qr_image = qr_image.convert('L')
+        qr_image = qr_image.resize((33, 33), Image.NEAREST)
+        
+        pixels = qr_image.load()
+        width, height = qr_image.size
+        border = 2
+        
+        for _ in range(border):
+            print("  " + " " * width)
+        
+        for y in range(0, height, 2):
+            line = ""
+            for x in range(width):
+                top = pixels[x, y] if y < height else 255
+                bottom = pixels[x, y + 1] if y + 1 < height else 255
+                if top < 128 and bottom < 128:
+                    line += "█"
+                elif top < 128 and bottom >= 128:
+                    line += "▀"
+                elif top >= 128 and bottom < 128:
+                    line += "▄"
+                else:
+                    line += " "
+            print("  " + line)
+        
+        for _ in range(border):
+            print("  " + " " * width)
+    
+    def _open_qr_image(self, qr_img_data: bytes) -> tuple:
+        """保存并打开二维码图片，返回 (路径, 进程)"""
+        qr_path = tempfile.mktemp(suffix='.png', prefix='weread_qr_')
+        with open(qr_path, 'wb') as f:
+            f.write(qr_img_data)
+        
+        print(f"\n✅ 二维码图片: {qr_path}")
+        
+        # macOS: 用 open 打开图片
+        proc = subprocess.Popen(['open', '-a', 'Preview', qr_path])
+        print("✅ 已在预览中打开二维码图片")
+        return qr_path, proc
+    
+    def _close_qr_image(self, qr_path: str, proc) -> None:
+        """关闭打开的二维码图片"""
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            # macOS: 关闭 Preview 中打开二维码文件
+            subprocess.run(['osascript', '-e',
+                f'tell application "Preview"\n'
+                f'  close (every document whose path is "{qr_path}")\n'
+                f'end tell'],
+                capture_output=True, timeout=3)
+        except Exception:
+            pass
+        # 清理临时文件
+        try:
+            os.unlink(qr_path)
+        except Exception:
+            pass
+    
     def login_via_qr(self) -> bool:
         """
         终端二维码登录流程：
         1. 访问微信读书首页
         2. 点击登录按钮
         3. 等待 QR 码弹窗出现
-        4. 提取 base64 二维码并显示
-        5. 轮询登录状态
+        4. 提取二维码，终端打印 + 打开图片
+        5. 轮询登录状态，成功后关闭图片
         """
         print("\n" + "=" * 60)
         print("📱 微信读书 - 终端二维码登录")
         print("=" * 60)
+        
+        qr_path = None
+        qr_proc = None
         
         try:
             from playwright.sync_api import sync_playwright
@@ -58,7 +132,6 @@ class QRLogin:
                 
                 # 点击登录按钮
                 print("[3/5] 点击登录...")
-                # 首页的登录按钮
                 login_btn = (
                     page.query_selector('.wr_header_login') or
                     page.query_selector('.wr_index_page_header_login') or
@@ -77,7 +150,6 @@ class QRLogin:
                 print("[4/5] 等待二维码加载...")
                 page.wait_for_timeout(2000)
                 
-                # 验证弹窗是否出现
                 has_modal = page.evaluate("""() => {
                     return !!document.querySelector('.wr_login_modal_wrapper');
                 }""")
@@ -90,20 +162,8 @@ class QRLogin:
                 # 获取二维码
                 print("[5/5] 提取二维码...")
                 
-                # 优先尝试获取二维码 URL
                 qr_data = page.evaluate("""() => {
-                    // 方法1：查找包含二维码 URL 的 img 标签
                     const images = document.querySelectorAll('img');
-                    for (const img of images) {
-                        const src = img.getAttribute('src') || '';
-                        // 微信登录二维码 URL 通常包含 qrconnect 或 wx 等关键词
-                        if (src.includes('qrconnect') || src.includes('/connect/qrcode/') || 
-                            (src.includes('open.weixin') && src.includes('uuid'))) {
-                            return { type: 'url', data: src };
-                        }
-                    }
-                    
-                    // 方法2：查找 base64 编码的二维码图片
                     for (const img of images) {
                         const src = img.getAttribute('src') || '';
                         if (src.startsWith('data:image/') && img.width > 100) {
@@ -118,89 +178,38 @@ class QRLogin:
                     browser.close()
                     return False
                 
-                # 处理二维码数据
+                # 提取 base64 图片数据
+                print("\n处理二维码图片...")
                 qr_img_data = None
-                qr_url = None
                 
-                if qr_data['type'] == 'url':
-                    # 直接使用 URL，用 qrcode 库生成终端二维码
-                    qr_url = qr_data['data']
-                    print(f"✅ 获取到二维码 URL")
-                else:
-                    # base64 图片数据
-                    print(f"\n处理二维码图片...")
-                    if qr_data['data'].startswith('data:image'):
-                        base64_match = re.search(r'data:image/\w+;base64,([^,]+)', qr_data['data'])
-                        if base64_match:
-                            qr_img_data = base64.b64decode(base64_match.group(1))
-                            print(f"✅ 解码成功，图片大小：{len(qr_img_data)} 字节")
-                        else:
-                            print("❌ 无法解析 base64 图片")
-                            browser.close()
-                            return False
+                if qr_data['data'].startswith('data:image'):
+                    base64_match = re.search(r'data:image/\w+;base64,([^,]+)', qr_data['data'])
+                    if base64_match:
+                        qr_img_data = base64.b64decode(base64_match.group(1))
+                        print(f"✅ 解码成功，图片大小：{len(qr_img_data)} 字节")
                     else:
-                        qr_img_resp = httpx.get(qr_data['data'], timeout=10)
-                        if qr_img_resp.status_code == 200:
-                            qr_img_data = qr_img_resp.content
-                        else:
-                            print(f"❌ 下载失败：{qr_img_resp.status_code}")
-                            browser.close()
-                            return False
-                
-                # 显示二维码到终端
-                print()
-                print("  请打开微信 → 扫一扫 → 扫描以下二维码：")
-                print()
-                
-                if qr_url:
-                    # 有 URL，用 qrcode 库生成标准终端二维码
-                    import qrcode
-                    qr = qrcode.QRCode(
-                        version=None,
-                        error_correction=qrcode.constants.ERROR_CORRECT_H,
-                        box_size=1,
-                        border=2,
-                    )
-                    qr.add_data(qr_url)
-                    qr.make(fit=True)
-                    qr.print_ascii(tty=True)
+                        print("❌ 无法解析 base64 图片")
+                        browser.close()
+                        return False
                 else:
-                    # 只有图片数据，用 PIL 渲染
-                    from PIL import Image
-                    from io import BytesIO
-                    
-                    pil_image = Image.open(BytesIO(qr_img_data))
-                    pil_image = pil_image.convert('L')
-                    
-                    # 缩放到合适大小
-                    scale = 33
-                    pil_image = pil_image.resize((scale, scale), Image.NEAREST)
-                    
-                    pixels = pil_image.load()
-                    width, height = pil_image.size
-                    
-                    # 添加白边
-                    border = 2
-                    for _ in range(border):
-                        print("  " + " " * width)
-                    
-                    for y in range(0, height, 2):
-                        line = ""
-                        for x in range(width):
-                            top = pixels[x, y] if y < height else 255
-                            bottom = pixels[x, y + 1] if y + 1 < height else 255
-                            if top < 128 and bottom < 128:
-                                line += "█"
-                            elif top < 128 and bottom >= 128:
-                                line += "▀"
-                            elif top >= 128 and bottom < 128:
-                                line += "▄"
-                            else:
-                                line += " "
-                        print("  " + line)
-                    
-                    for _ in range(border):
-                        print("  " + " " * width)
+                    qr_img_resp = httpx.get(qr_data['data'], timeout=10)
+                    if qr_img_resp.status_code == 200:
+                        qr_img_data = qr_img_resp.content
+                    else:
+                        print(f"❌ 下载失败：{qr_img_resp.status_code}")
+                        browser.close()
+                        return False
+                
+                # 同时：终端打印 + 打开图片
+                print()
+                print("  请打开微信 → 扫一扫 → 扫描二维码：")
+                print()
+                
+                # 1. 终端打印
+                self._display_qr_terminal(qr_img_data)
+                
+                # 2. 打开图片
+                qr_path, qr_proc = self._open_qr_image(qr_img_data)
                 print()
                 
                 # 轮询登录状态
@@ -210,8 +219,11 @@ class QRLogin:
                 
                 login_success = self._poll_login_status(page)
                 
+                # 扫码成功后关闭图片
+                if qr_path:
+                    self._close_qr_image(qr_path, qr_proc)
+                
                 if login_success:
-                    # 获取 Cookie
                     final_cookies = context.cookies()
                     weread_cookies = {}
                     for c in final_cookies:
