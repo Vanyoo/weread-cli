@@ -25,104 +25,51 @@ class QRLogin:
         return self.login_via_qr()
     
     def _display_qr_terminal(self, qr_img_data: bytes) -> None:
-        """在终端用等宽字符渲染二维码
+        """在终端直接渲染二维码，不缩放。
         
-        关键：检测实际模块网格，按模块中心采样。
-        不能直接缩放——即使差1个模块，扫描器都无法识别。
+        1. 裁剪掉图片白边，只保留 QR 码本体
+        2. 二值化消除抗锯齿
+        3. 原始像素逐行打印，每 2 行取 1 行
         """
         from PIL import Image
         from io import BytesIO
+        import shutil
         
-        raw = Image.open(BytesIO(qr_img_data)).convert('L')
-        raw_w, raw_h = raw.size
+        img = Image.open(BytesIO(qr_img_data)).convert('L')
         
-        # 1. 二值化
-        bw = raw.point(lambda p: 0 if p < 128 else 1)
+        # 二值化
+        bw = img.point(lambda p: 0 if p < 128 else 255)
+        
+        # 裁剪白边：找到实际的黑白区域
+        bbox = bw.getbbox()
+        if bbox:
+            bw = bw.crop(bbox)
+        
+        w, h = bw.size
         pixels = bw.load()
         
-        # 2. 从图像边缘检测二维码实际尺寸
-        # 二维码有静区（白边），找到实际黑白区域
-        def find_bounds():
-            left, top, right, bottom = raw_w, raw_h, 0, 0
-            for y in range(raw_h):
-                for x in range(raw_w):
-                    if pixels[x, y] == 0:
-                        left = min(left, x)
-                        top = min(top, y)
-                        right = max(right, x)
-                        bottom = max(bottom, y)
-            return left, top, right - left, bottom - top
+        # 终端可用宽度
+        term_w = shutil.get_terminal_size().columns - 4
         
-        left, top, qr_w, qr_h = find_bounds()
-        qr_size = max(qr_w, qr_h)
+        # 如果仍然超宽，按比例采样（取每隔 N 列）
+        step = max(1, (w + term_w - 1) // term_w)
         
-        # 3. 推断模块数：尝试 21-40 版本，找最匹配的
-        best_version = 25
-        best_score = float('inf')
-        
-        for v in range(21, 41):
-            module_size = qr_size / v
-            if module_size < 2:
-                continue
-            
-            # 采样验证：统计模块中心的黑白一致性
-            errors = 0
-            for my in range(v):
-                for mx in range(v):
-                    cx = left + int((mx + 0.5) * module_size)
-                    cy = top + int((my + 0.5) * module_size)
-                    if cx < raw_w and cy < raw_h:
-                        # 检查 3×3 区域的中心像素一致性
-                        center = pixels[cx, cy]
-                        for dy in [-1, 0, 1]:
-                            for dx in [-1, 0, 1]:
-                                nx, ny = cx + dx, cy + dy
-                                if 0 <= nx < raw_w and 0 <= ny < raw_h:
-                                    if pixels[nx, ny] != center:
-                                        errors += 1
-                    else:
-                        errors += 1
-            
-            if errors < best_score:
-                best_score = errors
-                best_version = v
-        
-        modules = best_version
-        module_px = qr_size / modules
-        
-        # 4. 采样每个模块的中心
-        module_grid = []
-        for my in range(modules):
-            row = []
-            for mx in range(modules):
-                cx = left + int((mx + 0.5) * module_px)
-                cy = top + int((my + 0.5) * module_px)
-                if 0 <= cx < raw_w and 0 <= cy < raw_h:
-                    # 3×3 区域投票
-                    votes = 0
-                    for dy in [-1, 0, 1]:
-                        for dx in [-1, 0, 1]:
-                            nx, ny = cx + dx, cy + dy
-                            if 0 <= nx < raw_w and 0 <= ny < raw_h:
-                                votes += pixels[nx, ny]
-                    row.append(0 if votes < 5 else 1)
-                else:
-                    row.append(1)
-            module_grid.append(row)
-        
-        # 5. 终端渲染：每个模块 = 2 个字符
-        quiet_zone = 2
-        empty = "  " + "  " * modules
         print()
-        for _ in range(quiet_zone):
-            print(empty)
-        for row in module_grid:
+        
+        # 上下各补 2 行白边（静区）
+        for _ in range(2):
+            print("  " + "  " * ((w + step - 1) // step))
+        
+        # 每 2 行取 1 行，按 step 采样列
+        for y in range(0, h, 2):
             line = "  "
-            for cell in row:
-                line += "██" if cell == 0 else "  "
+            for x in range(0, w, step):
+                line += "██" if pixels[x, y] == 0 else "  "
             print(line)
-        for _ in range(quiet_zone):
-            print(empty)
+        
+        # 下白边
+        for _ in range(2):
+            print("  " + "  " * ((w + step - 1) // step))
     
     def _open_qr_image(self, qr_img_data: bytes) -> tuple:
         """保存并打开二维码图片，返回 (路径, 进程)"""
