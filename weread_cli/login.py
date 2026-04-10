@@ -5,8 +5,6 @@ import json
 import time
 import re
 import base64
-import tempfile
-import subprocess
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -134,19 +132,41 @@ class QRLogin:
                         browser.close()
                         return False
                 
-                # 保存图片
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
-                    f.write(qr_img_data)
-                    qr_path = f.name
+                # 显示二维码到终端
+                from PIL import Image
+                from io import BytesIO
                 
-                print(f"\n✅ 二维码已保存：{qr_path}")
-                
-                # 打开图片
-                try:
-                    subprocess.run(['open', qr_path], check=True, capture_output=True)
-                    print("✅ 已在默认图片查看器中打开")
-                except Exception:
-                    print("⚠️  无法自动打开，请手动查看上述文件")
+                qr_image = Image.open(BytesIO(qr_img_data))
+                qr_image = qr_image.convert('L')  # 转灰度
+                qr_image = qr_image.resize((33, 33), Image.NEAREST)  # 缩小到适合终端的尺寸
+
+                # 使用 Unicode 块字符将图片转为终端 ASCII 艺术
+                # 使用两个字符高度来补偿终端字符的宽高比
+                pixels = qr_image.load()
+                width, height = qr_image.size
+                ascii_art = []
+                for y in range(0, height, 2):
+                    line = ""
+                    for x in range(width):
+                        top = pixels[x, y] if y < height else 255
+                        bottom = pixels[x, y + 1] if y + 1 < height else 255
+                        # 使用 Unicode 半块字符，上方黑色/下方白色
+                        if top < 128 and bottom < 128:
+                            line += "█"  # 全黑
+                        elif top < 128 and bottom >= 128:
+                            line += "▀"  # 上半黑
+                        elif top >= 128 and bottom < 128:
+                            line += "▄"  # 下半黑
+                        else:
+                            line += " "  # 全白
+                    ascii_art.append(line)
+
+                print()
+                print("  请用微信扫一扫以下二维码：")
+                print()
+                for line in ascii_art:
+                    print(f"  {line}")
+                print()
                 
                 # 轮询登录状态
                 print("\n" + "=" * 60)
