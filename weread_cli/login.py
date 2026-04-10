@@ -20,15 +20,11 @@ class QRLogin:
     def __init__(self, cookie_file: Optional[Path] = None):
         self.cookie_file = cookie_file or Path.home() / ".weread_cookies.json"
     
-    def login_via_browser(self) -> bool:
-        """浏览器登录（终端二维码展示）"""
-        return self.login_via_qr()
-    
     def _display_qr_terminal(self, qr_img_data: bytes) -> None:
-        """在终端渲染二维码，控制尺寸适应屏幕。
+        """在终端渲染二维码，严格 1:1 视觉比例。
         
-        终端字符宽高比 ≈ 1:2（字符高度是宽度的2倍）。
-        所以：1 字符/列，每隔 2 行取 1 行 → 显示比例 ≈ 1:1
+        终端字符：宽 ≈ 0.5em, 高 ≈ 1.0em → 字符高宽比 2:1
+        要得到 1:1 正方形：输出列数 = 行数 × 2
         """
         from PIL import Image
         from io import BytesIO
@@ -43,33 +39,48 @@ class QRLogin:
         w, h = bw.size
         pixels = bw.load()
         
-        # 终端可用尺寸
         term_w = shutil.get_terminal_size().columns - 6
         max_h = shutil.get_terminal_size().lines - 10
         
-        # 计算采样步长
-        # 1 字符/列 → 宽度需要 w/step <= term_w
-        # 每 2 行取 1 行 → 高度需要 h/(2*step) <= max_h
-        step_x = max(1, (w + term_w - 1) // term_w)
-        step_y = max(1, (h + 2 * max_h - 1) // (2 * max_h))
-        step = max(step_x, step_y)
+        # 终端字符 2:1 高宽比 → 列数 = 行数 × 2 才能视觉正方形
+        # 缩小 50%
+        target_rows = max(8, max_h // 4)   # 行数减半再减半
+        target_cols = target_rows * 2       # 列数 = 行数 × 2
         
-        out_w = (w + step - 1) // step
-        out_h = (h + 2 * step - 1) // (2 * step)
+        # 块大小：行采样步长 vs 列采样步长（列步长是行的一半）
+        block_y = max(1, h // target_rows)
+        block_x = max(1, w // target_cols)
+        
+        out_w = (w + block_x - 1) // block_x
+        out_h = (h + block_y - 1) // block_y
+        
+        # 取较小值确保完整正方形
+        size_rows = min(out_h, target_rows)
+        size_cols = min(out_w, size_rows * 2)
         
         print()
         for _ in range(2):
-            print("  " + " " * out_w)
+            print("  " + " " * size_cols)
         
-        # 每隔 step*2 行取 1 行（补偿字符 2:1 高宽比）
-        for y in range(0, h, step * 2):
+        for by in range(size_rows):
+            y_start = by * block_y
             line = "  "
-            for x in range(0, w, step):
-                line += "█" if pixels[x, y] == 0 else " "
+            for bx in range(size_cols):
+                x_start = bx * block_x
+                total = 0
+                count = 0
+                for dy in range(block_y):
+                    for dx in range(block_x):
+                        px, py = x_start + dx, y_start + dy
+                        if px < w and py < h:
+                            total += pixels[px, py]
+                            count += 1
+                avg = total / count if count > 0 else 255
+                line += "█" if avg < 128 else " "
             print(line)
         
         for _ in range(2):
-            print("  " + " " * out_w)
+            print("  " + " " * size_cols)
     
     def _open_qr_image(self, qr_img_data: bytes) -> tuple:
         """保存并打开二维码图片，返回路径"""
