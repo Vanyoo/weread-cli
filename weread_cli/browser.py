@@ -209,22 +209,19 @@ class CDPBrowserManager:
             # 微信读书使用 Canvas 渲染正文，通过拦截 fillText 可以提取文本
             self._page.add_init_script("""
                 window.__CANVAS_TEXT__ = [];
-                if (!window.__CANVAS_TEXT_HOOKED__) {
-                    window.__CANVAS_TEXT_HOOKED__ = true;
-                    const origFillText = CanvasRenderingContext2D.prototype.fillText;
-                    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-                        if (text && typeof text === 'string' && text.trim().length > 0) {
-                            window.__CANVAS_TEXT__.push({
-                                text: text,
-                                x: x,
-                                y: y,
-                                maxWidth: maxWidth,
-                                timestamp: Date.now()
-                            });
-                        }
-                        return origFillText.apply(this, arguments);
-                    };
-                }
+                const origFillText = CanvasRenderingContext2D.prototype.fillText;
+                CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
+                    if (text && typeof text === 'string' && text.length > 0) {
+                        window.__CANVAS_TEXT__.push({
+                            text: text,
+                            x: x,
+                            y: y,
+                            maxWidth: maxWidth,
+                            timestamp: Date.now()
+                        });
+                    }
+                    return origFillText.call(this, text, x, y, maxWidth);
+                };
             """)
 
             return True
@@ -378,7 +375,10 @@ class CDPBrowserManager:
     def go_to_chapter(self, chapter_uid: int, chapter_title: str = "", chapter_index: int = 0) -> Optional[str]:
         """
         跳转到指定章节。
-        不打开目录面板，通过 URL 直接导航或翻页到达目标章节。
+
+        策略：
+        - chapter_index == 0：不导航，直接从当前页面提取（首章已在阅读器首页）
+        - chapter_index > 0：通过目录面板跳转
         """
         if not self.is_alive:
             return None
@@ -387,64 +387,35 @@ class CDPBrowserManager:
             if not self._book_loaded:
                 return None
 
-            # 确保 Canvas 钩子存在
-            self._inject_canvas_hook()
-
-            if chapter_index == 0:
-                # 首章：自动点击通过前导页（封面/版权/简介）
-                max_clicks = 15
-                for _ in range(max_clicks):
-                    btn = self._find_text('开始阅读')
-                    if not btn:
-                        btn = self._find_text('阅读')
-                    if not btn:
-                        btn = self._find_text('下一页')
-                    if not btn:
-                        break
-                    btn.click(force=True, timeout=2000)
-                    self._page.wait_for_timeout(500)
-
-                self._wait_for_canvas_text(timeout_ms=15000)
-                extracted = self._extract_chapter_title_from_canvas()
-                self.state.chapter_uid = chapter_uid
-                self.state.chapter_index = 0
-                return extracted or chapter_title or "未知章节"
-
-            # 非首章：直接 URL 导航到目标章节
-            # 微信读书 URL 格式: /web/reader/{book_hash}{chapter_hash}
-            book_hash = weread_hash(self.state.book_id)
-            chapter_hash = weread_hash(chapter_uid)
-            target_url = f"https://weread.qq.com/web/reader/{book_hash}{chapter_hash}"
-
-            print(f"  📖 导航到第 {chapter_index + 1} 章 (uid={chapter_uid})")
-
+            # 使用 weread_hash 直接跳转到目标章节的 URL
+            # 不再通过目录面板，避免目录不关闭导致无法提取内容
+            encoded_chapter = weread_hash(chapter_uid)
+            url = f"https://weread.qq.com/web/reader/{encoded_chapter}"
+            
             # 清空旧 Canvas 文本
             self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
-
-            # 直接导航
-            self._page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
-
-            # 等待页面 JS 初始化完成
+            
+            # 直接导航到章节 URL
+            self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            self._page.wait_for_timeout(2000)
+            
+            # 注入 Canvas 钩子（确保页面加载后也能捕获）
+            self._inject_canvas_hook()
+            
+            # 等待正文 Canvas 渲染
+            self._wait_for_canvas_text(timeout_ms=10000)
+            
+            # 额外等待确保渲染完全
             self._page.wait_for_timeout(1500)
 
-            # 重新注入 Canvas 钩子（导航后可能丢失）
-            self._inject_canvas_hook()
-            self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+            extracted_title = self._extract_chapter_title_from_canvas()
+            self.state.chapter_uid = chapter_uid
 
-            # 等待 Canvas 正文渲染
-            canvas_ready = self._wait_for_canvas_text(timeout_ms=15000)
+            return extracted_title or chapter_title or "未知章节"
 
-            if not canvas_ready:
-                # Canvas 没有捕获到文本，可能是页面未完全渲染
-                # 尝试多等一会
-                self._page.wait_for_timeout(3000)
-                self._inject_canvas_hook()
-                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
-                # 模拟点击页面触发渲染
-                self._page.mouse.click(600, 400)
-                self._page.wait_for_timeout(2000)
-                self._wait_for_canvas_text(timeout_ms=10000)
-
+        except Exception as e:
+            print(f"❌ 跳转章节失败: {e}")
+            return None
             # 调试信息
             count = self._page.evaluate("() => (window.__CANVAS_TEXT__ || []).length")
             print(f"  🔍 Canvas 捕获: {count} 条文本")
