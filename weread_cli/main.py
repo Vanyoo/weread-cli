@@ -577,7 +577,7 @@ class WeReadCLI:
                             self.current_chapter_index = ch_choice - 1
 
                             chapter = self.current_chapters[self.current_chapter_index]
-                            browser.go_to_chapter(int(chapter.chapter_id), chapter_title=chapter.title, chapter_index=ch_choice - 1)
+                            browser.go_to_chapter(int(chapter.chapter_id), chapter_title=chapter.title, chapter_index=ch_choice - 1, chapter_idx=chapter.chapter_idx)
                             browser_navigated = True
                             # 保存阅读进度
                             _save_reading_state(

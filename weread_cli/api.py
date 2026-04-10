@@ -237,7 +237,8 @@ class WeReadAPI:
                         chapter_id=str(ch.get("chapterUid", idx)),
                         title=ch.get("title", f"Chapter {idx+1}"),
                         index=idx,
-                        is_vip=ch.get("price", 0) > 0
+                        is_vip=ch.get("price", 0) > 0,
+                        chapter_idx=ch.get("chapterIdx", idx)
                     ))
         except Exception as e:
             print(f"❌ 获取章节失败：{e}")

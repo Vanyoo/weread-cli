@@ -372,13 +372,13 @@ class CDPBrowserManager:
 
         return False
 
-    def go_to_chapter(self, chapter_uid: int, chapter_title: str = "", chapter_index: int = 0) -> Optional[str]:
+    def go_to_chapter(self, chapter_uid: int, chapter_title: str = "", chapter_index: int = 0, chapter_idx: int = 0) -> Optional[str]:
         """
         跳转到指定章节。
 
-        策略：
-        - chapter_index == 0：不导航，直接从当前页面提取（首章已在阅读器首页）
-        - chapter_index > 0：通过目录面板跳转
+        策略：通过 JS 修改 location 触发 SPA 内部路由，不触发完整页面重载。
+        章节 URL 格式: /web/reader/{book_hash}k{chapter_hash}
+        注意: chapter_hash = weread_hash(chapter_idx)，不是 weread_hash(chapter_uid)
         """
         if not self.is_alive:
             return None
@@ -387,25 +387,21 @@ class CDPBrowserManager:
             if not self._book_loaded:
                 return None
 
-            # 使用 weread_hash 直接跳转到目标章节的 URL
-            # 不再通过目录面板，避免目录不关闭导致无法提取内容
-            encoded_chapter = weread_hash(chapter_uid)
-            url = f"https://weread.qq.com/web/reader/{encoded_chapter}"
-            
             # 清空旧 Canvas 文本
             self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+
+            # 构建完整章节 URL: {book_hash}k{chapter_hash}
+            # chapter_hash 使用 chapter_idx（API 返回的章节索引），不是 chapter_uid
+            book_hash = weread_hash(self.state.book_id)
+            hash_input = chapter_idx if chapter_idx > 0 else chapter_uid
+            chapter_hash = weread_hash(hash_input)
+            target_path = f"/web/reader/{book_hash}k{chapter_hash}"
             
-            # 直接导航到章节 URL
-            self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            self._page.wait_for_timeout(2000)
+            # 通过 JS 修改 location 触发 SPA 路由，而非 page.goto()（会导致页面重载 + Canvas hook 丢失）
+            self._page.evaluate(f"() => window.location.href = '{target_path}'")
             
-            # 注入 Canvas 钩子（确保页面加载后也能捕获）
-            self._inject_canvas_hook()
-            
-            # 等待正文 Canvas 渲染
+            # 等待 SPA 路由完成 + Canvas 渲染
             self._wait_for_canvas_text(timeout_ms=10000)
-            
-            # 额外等待确保渲染完全
             self._page.wait_for_timeout(1500)
 
             extracted_title = self._extract_chapter_title_from_canvas()

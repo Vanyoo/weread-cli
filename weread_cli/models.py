@@ -29,6 +29,7 @@ class Chapter:
     title: str
     index: int = 0
     is_vip: bool = False
+    chapter_idx: int = 0  # API 返回的 chapterIdx，用于生成 URL chapter_hash
     
     def __str__(self):
         vip_mark = "👑 " if self.is_vip else ""
