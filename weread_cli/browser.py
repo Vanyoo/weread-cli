@@ -369,10 +369,13 @@ class CDPBrowserManager:
 
             if has_chapter_content:
                 return True
+
+        return False
+
     def go_to_chapter(self, chapter_uid: int, chapter_title: str = "", chapter_index: int = 0) -> Optional[str]:
         """
         跳转到指定章节。
-        不打开目录面板，通过翻页方式到达目标章节。
+        不打开目录面板，通过翻页或 JS 内部调用到达目标章节。
         """
         if not self.is_alive:
             return None
@@ -406,41 +409,57 @@ class CDPBrowserManager:
                 self.state.chapter_uid = chapter_uid
                 return extracted or chapter_title or "未知章节"
 
-            # 非首章：使用翻页方式到达目标章节（不需要打开目录）
-            # 先确保不在封面页
-            for _ in range(10):
-                btn = self._find_text('开始阅读') or self._find_text('阅读') or self._find_text('下一页')
-                if not btn:
-                    break
-                btn.click(force=True, timeout=2000)
-                self._page.wait_for_timeout(500)
-            
-            # 通过翻页到达目标章节
-            target = chapter_index
-            reached = 0
-            max_pages = target * 3  # 每章最多3页
-            page_count = 0
-            
-            while reached < target and page_count < max_pages:
-                # 先检查是否有"下一章"按钮（章节末尾）
-                next_ch_btn = self._find_text('下一章')
-                if next_ch_btn:
-                    self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
-                    next_ch_btn.click(force=True, timeout=2000)
-                    reached += 1
-                    self._page.wait_for_timeout(800)
-                    continue
+            # 非首章：尝试 JS 内部跳转（不需要打开目录）
+            jumped = self._page.evaluate("""(uid) => {
+                if (window.readController && typeof window.readController.goChapter === 'function') {
+                    window.readController.goChapter(uid);
+                    return true;
+                }
+                if (window.routerManager && typeof window.routerManager.goReader === 'function') {
+                    window.routerManager.goReader({ chapterUid: uid });
+                    return true;
+                }
+                return false;
+            }""", chapter_uid)
+
+            if not jumped:
+                # JS 跳转不可用，使用翻页方式到达目标章节
+                print(f"  ⚠️ JS 跳转不可用，翻页到第 {chapter_index + 1} 章")
                 
-                btn = self._find_text('下一页')
-                if btn:
-                    self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                # 先确保不在封面页
+                for _ in range(10):
+                    btn = self._find_text('开始阅读') or self._find_text('阅读') or self._find_text('下一页')
+                    if not btn:
+                        break
                     btn.click(force=True, timeout=2000)
                     self._page.wait_for_timeout(500)
-                    page_count += 1
-                else:
-                    break
-            
-            print(f"  📄 翻页完成: 到达第 {reached + 1} 章（目标 {target + 1}）")
+                
+                # 通过翻页到达目标章节
+                target = chapter_index
+                reached = 0
+                max_pages = target * 3  # 每章最多3页
+                page_count = 0
+                
+                while reached < target and page_count < max_pages:
+                    # 先检查是否有"下一章"按钮（章节末尾）
+                    next_ch_btn = self._find_text('下一章')
+                    if next_ch_btn:
+                        self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                        next_ch_btn.click(force=True, timeout=2000)
+                        reached += 1
+                        self._page.wait_for_timeout(800)
+                        continue
+                    
+                    btn = self._find_text('下一页')
+                    if btn:
+                        self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                        btn.click(force=True, timeout=2000)
+                        self._page.wait_for_timeout(500)
+                        page_count += 1
+                    else:
+                        break
+                
+                print(f"  📄 翻页完成: 到达第 {reached + 1} 章（目标 {target + 1}）")
             
             # 等待 Canvas 渲染
             self._page.wait_for_timeout(2000)
