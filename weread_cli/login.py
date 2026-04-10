@@ -25,38 +25,104 @@ class QRLogin:
         return self.login_via_qr()
     
     def _display_qr_terminal(self, qr_img_data: bytes) -> None:
-        """在终端用 ASCII 艺术渲染二维码"""
+        """在终端用等宽字符渲染二维码
+        
+        关键：检测实际模块网格，按模块中心采样。
+        不能直接缩放——即使差1个模块，扫描器都无法识别。
+        """
         from PIL import Image
         from io import BytesIO
         
-        qr_image = Image.open(BytesIO(qr_img_data))
-        qr_image = qr_image.convert('L')
-        qr_image = qr_image.resize((33, 33), Image.NEAREST)
+        raw = Image.open(BytesIO(qr_img_data)).convert('L')
+        raw_w, raw_h = raw.size
         
-        pixels = qr_image.load()
-        width, height = qr_image.size
-        border = 2
+        # 1. 二值化
+        bw = raw.point(lambda p: 0 if p < 128 else 1)
+        pixels = bw.load()
         
-        for _ in range(border):
-            print("  " + " " * width)
+        # 2. 从图像边缘检测二维码实际尺寸
+        # 二维码有静区（白边），找到实际黑白区域
+        def find_bounds():
+            left, top, right, bottom = raw_w, raw_h, 0, 0
+            for y in range(raw_h):
+                for x in range(raw_w):
+                    if pixels[x, y] == 0:
+                        left = min(left, x)
+                        top = min(top, y)
+                        right = max(right, x)
+                        bottom = max(bottom, y)
+            return left, top, right - left, bottom - top
         
-        for y in range(0, height, 2):
-            line = ""
-            for x in range(width):
-                top = pixels[x, y] if y < height else 255
-                bottom = pixels[x, y + 1] if y + 1 < height else 255
-                if top < 128 and bottom < 128:
-                    line += "█"
-                elif top < 128 and bottom >= 128:
-                    line += "▀"
-                elif top >= 128 and bottom < 128:
-                    line += "▄"
+        left, top, qr_w, qr_h = find_bounds()
+        qr_size = max(qr_w, qr_h)
+        
+        # 3. 推断模块数：尝试 21-40 版本，找最匹配的
+        best_version = 25
+        best_score = float('inf')
+        
+        for v in range(21, 41):
+            module_size = qr_size / v
+            if module_size < 2:
+                continue
+            
+            # 采样验证：统计模块中心的黑白一致性
+            errors = 0
+            for my in range(v):
+                for mx in range(v):
+                    cx = left + int((mx + 0.5) * module_size)
+                    cy = top + int((my + 0.5) * module_size)
+                    if cx < raw_w and cy < raw_h:
+                        # 检查 3×3 区域的中心像素一致性
+                        center = pixels[cx, cy]
+                        for dy in [-1, 0, 1]:
+                            for dx in [-1, 0, 1]:
+                                nx, ny = cx + dx, cy + dy
+                                if 0 <= nx < raw_w and 0 <= ny < raw_h:
+                                    if pixels[nx, ny] != center:
+                                        errors += 1
+                    else:
+                        errors += 1
+            
+            if errors < best_score:
+                best_score = errors
+                best_version = v
+        
+        modules = best_version
+        module_px = qr_size / modules
+        
+        # 4. 采样每个模块的中心
+        module_grid = []
+        for my in range(modules):
+            row = []
+            for mx in range(modules):
+                cx = left + int((mx + 0.5) * module_px)
+                cy = top + int((my + 0.5) * module_px)
+                if 0 <= cx < raw_w and 0 <= cy < raw_h:
+                    # 3×3 区域投票
+                    votes = 0
+                    for dy in [-1, 0, 1]:
+                        for dx in [-1, 0, 1]:
+                            nx, ny = cx + dx, cy + dy
+                            if 0 <= nx < raw_w and 0 <= ny < raw_h:
+                                votes += pixels[nx, ny]
+                    row.append(0 if votes < 5 else 1)
                 else:
-                    line += " "
-            print("  " + line)
+                    row.append(1)
+            module_grid.append(row)
         
-        for _ in range(border):
-            print("  " + " " * width)
+        # 5. 终端渲染：每个模块 = 2 个字符
+        quiet_zone = 2
+        empty = "  " + "  " * modules
+        print()
+        for _ in range(quiet_zone):
+            print(empty)
+        for row in module_grid:
+            line = "  "
+            for cell in row:
+                line += "██" if cell == 0 else "  "
+            print(line)
+        for _ in range(quiet_zone):
+            print(empty)
     
     def _open_qr_image(self, qr_img_data: bytes) -> tuple:
         """保存并打开二维码图片，返回 (路径, 进程)"""
