@@ -131,4 +131,23 @@ def reconstruct_text_from_canvas(captured: List[Dict]) -> str:
     if current_paragraph:
         paragraphs.append("".join(current_paragraph))
 
-    return "\n\n".join(paragraphs)
+    # ── 第七步：过滤字体预加载测试行 ─────────────────────
+    # 微信读书会在 Canvas 初始化时渲染完整的 ASCII 字符集用于字体映射，
+    # 这不是正文内容，需要过滤掉。
+    known_noise = [
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ`~1!2@3#4$5%6^7&8*9(0)-_=+[{]}|;:',<.>/?",
+    ]
+    filtered = []
+    for p in paragraphs:
+        # 过滤已知的字体测试字符串
+        if p in known_noise:
+            continue
+        # 也过滤包含完整 ASCII 字符集的超长行（>80 字符且包含所有字母）
+        if len(p) > 80:
+            has_all_lower = all(c in p for c in "abcdefghijklmnopqrstuvwxyz")
+            has_all_upper = all(c in p for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            if has_all_lower and has_all_upper:
+                continue
+        filtered.append(p)
+
+    return "\n\n".join(filtered)

@@ -430,9 +430,15 @@ class CDPBrowserManager:
             nav_words = ['上一页', '下一页', '下一章', '上一章', '开始阅读', '阅读', '加入书架']
             lines = [l.strip() for l in text.split('\n\n') if l.strip()]
             for line in lines:
-                # 跳过只包含导航词的行
+                # 跳过导航词
                 if any(w in line for w in nav_words):
                     continue
+                # 跳过字体预加载测试行（包含完整 ASCII 字符集）
+                if len(line) > 80:
+                    has_all_lower = all(c in line for c in "abcdefghijklmnopqrstuvwxyz")
+                    has_all_upper = all(c in line for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+                    if has_all_lower and has_all_upper:
+                        continue
                 # 如果行太长，可能是正文而非标题
                 if len(line) < 50:
                     return line
