@@ -7,6 +7,7 @@
 """
 
 import sys
+import json
 import signal
 from typing import Optional, List
 from pathlib import Path
@@ -25,6 +26,36 @@ from .models import Book
 console = Console()
 
 
+# ── 阅读状态持久化 ────────────────────────────────────────
+
+_STATE_FILE = Path.home() / ".weread_cli_state.json"
+
+
+def _save_reading_state(book_id: str, title: str, author: str, chapter_index: int, chapters: list):
+    """保存阅读进度到本地"""
+    # 章节列表太大不持久化，只保存 book_id 和章节索引
+    state = {
+        "book_id": book_id,
+        "title": title,
+        "author": author,
+        "chapter_index": chapter_index,
+    }
+    try:
+        _STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
+
+def _load_reading_state() -> Optional[dict]:
+    """加载上次阅读进度"""
+    if _STATE_FILE.exists():
+        try:
+            return json.loads(_STATE_FILE.read_text())
+        except Exception:
+            return None
+    return None
+
+
 class WeReadCLI:
     """微信读书 CLI"""
 
@@ -39,9 +70,18 @@ class WeReadCLI:
     # ── 信号处理 ────────────────────────────────────────────
 
     def _setup_signals(self):
-        """注册信号处理，确保退出时关闭浏览器"""
+        """注册信号处理，确保退出时关闭浏览器并保存状态"""
         def cleanup(signum, frame):
             console.print("\n[yellow]正在关闭浏览器...[/yellow]")
+            # 保存当前阅读进度
+            if self.current_book and self.current_chapters:
+                _save_reading_state(
+                    self.current_book.book_id,
+                    self.current_book.title,
+                    self.current_book.author,
+                    self.current_chapter_index,
+                    self.current_chapters,
+                )
             self.api.close()
             console.print("[green]👋 再见！[/green]")
             sys.exit(0)
@@ -175,17 +215,27 @@ class WeReadCLI:
             else:
                 console.print("[yellow]⚠️  无效序号[/yellow]\n")
 
-    def _load_book_for_reading(self, book: Book):
-        """加载一本书准备阅读"""
+    def _load_book_for_reading(self, book: Book, start_chapter: int = 0):
+        """加载一本书准备阅读
+
+        Args:
+            book: 书籍对象
+            start_chapter: 起始章节索引，默认 0
+        """
         self.current_book = book
         console.print(f"\n[green]✅ 已选择：{book.title}[/green]")
 
         # 获取章节列表
         self.current_chapters = self.api.get_chapters(book.book_id)
-        self.current_chapter_index = 0
+        # 确保章节索引合法
+        self.current_chapter_index = max(0, min(start_chapter, len(self.current_chapters) - 1)) if self.current_chapters else 0
 
         if self.current_chapters:
-            console.print(f"共 {len(self.current_chapters)} 章\n")
+            console.print(f"共 {len(self.current_chapters)} 章")
+            if self.current_chapter_index > 0:
+                console.print(f"[yellow]📌 从上次阅读位置恢复：第 {self.current_chapter_index + 1} 章[/yellow]\n")
+            else:
+                console.print()
             # 直接进入阅读模式
             self._enter_reading_mode()
         else:
@@ -257,6 +307,15 @@ class WeReadCLI:
         if not self.current_chapters:
             console.print("[yellow]暂无章节[/yellow]\n")
             return
+
+        # 保存阅读状态
+        _save_reading_state(
+            self.current_book.book_id,
+            self.current_book.title,
+            self.current_book.author,
+            self.current_chapter_index,
+            self.current_chapters,
+        )
 
         # 启动浏览器（如果需要）
         console.print("[yellow]🌐 正在连接微信读书 Web...[/yellow]")
@@ -436,8 +495,15 @@ class WeReadCLI:
                             browser_navigated = True
                             if self.current_chapter_index < len(self.current_chapters) - 1:
                                 self.current_chapter_index += 1
-                            # 保存最新 Cookie
+                            # 保存最新 Cookie 和阅读进度
                             browser.save_session_cookies(self.login_manager.cookie_file)
+                            _save_reading_state(
+                                self.current_book.book_id,
+                                self.current_book.title,
+                                self.current_book.author,
+                                self.current_chapter_index,
+                                self.current_chapters,
+                            )
                         else:
                             console.print("[yellow]⚠️ 下一章跳转失败，可能已是末尾[/yellow]")
                     except Exception as e:
@@ -450,6 +516,14 @@ class WeReadCLI:
                             browser_navigated = True
                             if self.current_chapter_index > 0:
                                 self.current_chapter_index -= 1
+                            # 保存阅读进度
+                            _save_reading_state(
+                                self.current_book.book_id,
+                                self.current_book.title,
+                                self.current_book.author,
+                                self.current_chapter_index,
+                                self.current_chapters,
+                            )
                     except Exception as e:
                         console.print(f"[red]⚠️ 上一章跳转异常: {e}[/red]")
                 elif action == "f":
@@ -478,9 +552,18 @@ class WeReadCLI:
                         ch_choice = IntPrompt.ask("跳转到章节 (0 取消)", default=0)
                         if 0 < ch_choice <= len(self.current_chapters):
                             self.current_chapter_index = ch_choice - 1
+
                             chapter = self.current_chapters[self.current_chapter_index]
                             browser.go_to_chapter(int(chapter.chapter_id), chapter_title=chapter.title, chapter_index=ch_choice - 1)
                             browser_navigated = True
+                            # 保存阅读进度
+                            _save_reading_state(
+                                self.current_book.book_id,
+                                self.current_book.title,
+                                self.current_book.author,
+                                self.current_chapter_index,
+                                self.current_chapters,
+                            )
                     except Exception as e:
                         console.print(f"[red]⚠️ 章节选择异常: {e}[/red]")
                 elif action == "q":
@@ -627,12 +710,33 @@ class WeReadCLI:
                     console.print(f"[green]📖 继续阅读：{self.current_book.title}[/green]")
                     self._enter_reading_mode()
                 else:
-                    console.print("[yellow]⚠️  还没有选择过书籍，请从书架或搜索中选择[/yellow]\n")
+                    # 尝试从本地状态恢复
+                    state = _load_reading_state()
+                    if state:
+                        console.print(f"[yellow]📌 发现上次阅读记录：{state['title']}[/yellow]")
+                        # 创建 Book 对象并加载
+                        book = Book(
+                            book_id=state["book_id"],
+                            title=state["title"],
+                            author=state["author"],
+                        )
+                        self._load_book_for_reading(book, start_chapter=state["chapter_index"])
+                    else:
+                        console.print("[yellow]⚠️  还没有阅读记录，请从书架或搜索中选择[/yellow]\n")
             elif choice == "4":
                 self.login()
             elif choice == "5":
                 self.logout()
             elif choice == "0":
+                # 保存阅读进度
+                if self.current_book and self.current_chapters:
+                    _save_reading_state(
+                        self.current_book.book_id,
+                        self.current_book.title,
+                        self.current_book.author,
+                        self.current_chapter_index,
+                        self.current_chapters,
+                    )
                 console.print("\n[yellow]正在关闭浏览器...[/yellow]")
                 self.api.close()
                 console.print("[green]👋 再见！[/green]\n")
