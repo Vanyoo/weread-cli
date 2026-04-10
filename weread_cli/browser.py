@@ -416,26 +416,6 @@ class CDPBrowserManager:
         except Exception as e:
             print(f"❌ 跳转章节失败: {e}")
             return None
-            # 调试信息
-            count = self._page.evaluate("() => (window.__CANVAS_TEXT__ || []).length")
-            print(f"  🔍 Canvas 捕获: {count} 条文本")
-
-            if count < 5:
-                # Canvas 文本太少，可能是目录面板或其他覆盖层
-                # 截图调试
-                debug_path = f"/tmp/weread_debug_ch{chapter_index}.png"
-                self._page.screenshot(path=debug_path)
-                print(f"  ⚠️ Canvas 文本过少，已截图: {debug_path}")
-
-            extracted_title = self._extract_chapter_title_from_canvas()
-            self.state.chapter_uid = chapter_uid
-            self.state.chapter_index = chapter_index
-
-            return extracted_title or chapter_title or "未知章节"
-
-        except Exception as e:
-            print(f"❌ 跳转章节失败: {e}")
-            return None
 
     def _extract_chapter_title_from_canvas(self) -> str:
         """从 Canvas 文本中提取章节标题（通常是第一行非空文本）"""
@@ -644,7 +624,7 @@ class CDPBrowserManager:
                 window.__CANVAS_TEXT_HOOKED__ = true;
                 const origFillText = CanvasRenderingContext2D.prototype.fillText;
                 CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-                    if (text && typeof text === 'string' && text.trim().length > 0) {
+                    if (text && typeof text === 'string' && text.length > 0) {
                         window.__CANVAS_TEXT__.push({
                             text: text,
                             x: x,
@@ -653,7 +633,7 @@ class CDPBrowserManager:
                             timestamp: Date.now()
                         });
                     }
-                    return origFillText.apply(this, arguments);
+                    return origFillText.call(this, text, x, y, maxWidth);
                 };
             }
         """)
