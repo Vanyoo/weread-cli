@@ -25,22 +25,13 @@ class QRLogin:
         return self.login_via_qr()
     
     def _display_qr_terminal(self, qr_img_data: bytes) -> None:
-        """在终端直接渲染二维码，不缩放。
-        
-        1. 裁剪掉图片白边，只保留 QR 码本体
-        2. 二值化消除抗锯齿
-        3. 原始像素逐行打印，每 2 行取 1 行
-        """
+        """在终端渲染二维码，控制尺寸适应屏幕。"""
         from PIL import Image
         from io import BytesIO
         import shutil
         
         img = Image.open(BytesIO(qr_img_data)).convert('L')
-        
-        # 二值化
         bw = img.point(lambda p: 0 if p < 128 else 255)
-        
-        # 裁剪白边：找到实际的黑白区域
         bbox = bw.getbbox()
         if bbox:
             bw = bw.crop(bbox)
@@ -49,30 +40,33 @@ class QRLogin:
         pixels = bw.load()
         
         # 终端可用宽度
-        term_w = shutil.get_terminal_size().columns - 4
+        term_w = shutil.get_terminal_size().columns - 6
+        max_h = shutil.get_terminal_size().lines - 10
         
-        # 如果仍然超宽，按比例采样（取每隔 N 列）
-        step = max(1, (w + term_w - 1) // term_w)
+        # 计算采样步长：既要适配宽度也要适配高度
+        step_x = max(1, (w + term_w - 1) // term_w)
+        step_y = max(1, ((h + 1) // 2 + max_h - 1) // max_h)
+        # 统一用较大的步长，保持正方形比例
+        step = max(step_x, step_y)
+        
+        out_w = (w + step - 1) // step
         
         print()
-        
-        # 上下各补 2 行白边（静区）
         for _ in range(2):
-            print("  " + "  " * ((w + step - 1) // step))
+            print("  " + "  " * out_w)
         
-        # 每 2 行取 1 行，按 step 采样列
-        for y in range(0, h, 2):
+        # 每隔 step*2 行取 1 行（行步长×2 补偿字符高宽比）
+        for y in range(0, h, step * 2):
             line = "  "
             for x in range(0, w, step):
                 line += "██" if pixels[x, y] == 0 else "  "
             print(line)
         
-        # 下白边
         for _ in range(2):
-            print("  " + "  " * ((w + step - 1) // step))
+            print("  " + "  " * out_w)
     
     def _open_qr_image(self, qr_img_data: bytes) -> tuple:
-        """保存并打开二维码图片，返回 (路径, 进程)"""
+        """保存并打开二维码图片，返回路径"""
         qr_path = tempfile.mktemp(suffix='.png', prefix='weread_qr_')
         with open(qr_path, 'wb') as f:
             f.write(qr_img_data)
@@ -80,23 +74,23 @@ class QRLogin:
         print(f"\n✅ 二维码图片: {qr_path}")
         
         # macOS: 用 open 打开图片
-        proc = subprocess.Popen(['open', '-a', 'Preview', qr_path])
+        subprocess.Popen(['open', '-a', 'Preview', qr_path],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print("✅ 已在预览中打开二维码图片")
-        return qr_path, proc
+        return qr_path, None
     
     def _close_qr_image(self, qr_path: str, proc) -> None:
         """关闭打开的二维码图片"""
         try:
-            proc.terminate()
-        except Exception:
-            pass
-        try:
-            # macOS: 关闭 Preview 中打开二维码文件
-            subprocess.run(['osascript', '-e',
-                f'tell application "Preview"\n'
-                f'  close (every document whose path is "{qr_path}")\n'
-                f'end tell'],
-                capture_output=True, timeout=3)
+            import subprocess
+            # macOS: 关闭 Preview 中打开的指定文件
+            escaped_path = qr_path.replace('\\', '\\\\').replace('"', '\\"')
+            subprocess.run([
+                'osascript', '-e',
+                'tell application "Preview"',
+                f'  close (every document whose POSIX path is "{escaped_path}")',
+                'end tell'
+            ], capture_output=True, timeout=3)
         except Exception:
             pass
         # 清理临时文件
@@ -232,11 +226,10 @@ class QRLogin:
                 
                 login_success = self._poll_login_status(page)
                 
-                # 扫码成功后关闭图片
-                if qr_path:
-                    self._close_qr_image(qr_path, qr_proc)
-                
                 if login_success:
+                    # 扫码成功后关闭图片
+                    if qr_path:
+                        self._close_qr_image(qr_path, qr_proc)
                     final_cookies = context.cookies()
                     weread_cookies = {}
                     for c in final_cookies:
@@ -301,16 +294,17 @@ class QRLogin:
                     const modal = document.querySelector('.wr_login_modal_wrapper');
                     const modalExists = !!modal;
                     
-                    // 检查页面是否出现用户信息
-                    const userName = document.querySelector('.wr_user_name, .wr_header_user_name, [class*="user"]');
-                    const hasUserInfo = !!(userName && userName.innerText && userName.innerText.trim().length > 0);
+                    // 检查 body 是否存在（页面可能在跳转中）
+                    const body = document.body;
+                    if (!body) return { modalExists, hasUserInfo: false, hasLogout: false, url: '' };
+                    
+                    // 获取 body 文本判断是否有用户信息
+                    const bodyText = body.innerText || '';
+                    const hasLogout = bodyText.includes('退出登录') || bodyText.includes('书架');
+                    const hasUserInfo = hasLogout;
                     
                     // 检查 URL
                     const url = window.location.href;
-                    
-                    // 获取 body 文本判断是否有用户信息
-                    const bodyText = document.body.innerText;
-                    const hasLogout = bodyText.includes('退出登录') || bodyText.includes('书架');
                     
                     return {
                         modalExists,
