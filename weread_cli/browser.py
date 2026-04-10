@@ -450,21 +450,25 @@ class CDPBrowserManager:
                         pass
                 return None
 
-            # 等待页面渲染完成
-            self._page.wait_for_timeout(1500)
-            self._inject_canvas_hook()
-            self._wait_for_canvas_text(timeout_ms=8000)
-            
-            # 额外等待：确保 Canvas 渲染完全
-            self._page.wait_for_timeout(1000)
-
-            # 关闭目录
+            # 点击章节后，先关闭目录，再等待 Canvas 渲染
+            # 之前的问题：等待 Canvas 时目录还开着，关闭后 Canvas 可能未重新渲染
+            self._page.wait_for_timeout(800)
             catalog_btn = self._page.query_selector('.readerControls_item.catalog')
             if catalog_btn:
                 try:
                     catalog_btn.click()
                 except Exception:
                     pass
+
+            # 清空 Canvas 缓存，等待新章节的正文渲染
+            self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+            self._inject_canvas_hook()
+            
+            # 等待正文 Canvas 渲染完成（目录已关闭，页面稳定后）
+            self._wait_for_canvas_text(timeout_ms=10000)
+            
+            # 额外等待：确保 Canvas 渲染完全
+            self._page.wait_for_timeout(1500)
 
             extracted_title = self._extract_chapter_title_from_canvas()
             self.state.chapter_uid = chapter_uid
