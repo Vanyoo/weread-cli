@@ -209,19 +209,22 @@ class CDPBrowserManager:
             # 微信读书使用 Canvas 渲染正文，通过拦截 fillText 可以提取文本
             self._page.add_init_script("""
                 window.__CANVAS_TEXT__ = [];
-                const origFillText = CanvasRenderingContext2D.prototype.fillText;
-                CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-                    if (text && typeof text === 'string' && text.length > 0) {
-                        window.__CANVAS_TEXT__.push({
-                            text: text,
-                            x: x,
-                            y: y,
-                            maxWidth: maxWidth,
-                            timestamp: Date.now()
-                        });
-                    }
-                    return origFillText.call(this, text, x, y, maxWidth);
-                };
+                if (!window.__CANVAS_TEXT_HOOKED__) {
+                    window.__CANVAS_TEXT_HOOKED__ = true;
+                    const origFillText = CanvasRenderingContext2D.prototype.fillText;
+                    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
+                        if (text && typeof text === 'string' && text.trim().length > 0) {
+                            window.__CANVAS_TEXT__.push({
+                                text: text,
+                                x: x,
+                                y: y,
+                                maxWidth: maxWidth,
+                                timestamp: Date.now()
+                            });
+                        }
+                        return origFillText.apply(this, arguments);
+                    };
+                }
             """)
 
             return True
@@ -670,7 +673,7 @@ class CDPBrowserManager:
                 window.__CANVAS_TEXT_HOOKED__ = true;
                 const origFillText = CanvasRenderingContext2D.prototype.fillText;
                 CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-                    if (text && typeof text === 'string' && text.length > 0) {
+                    if (text && typeof text === 'string' && text.trim().length > 0) {
                         window.__CANVAS_TEXT__.push({
                             text: text,
                             x: x,
@@ -679,7 +682,7 @@ class CDPBrowserManager:
                             timestamp: Date.now()
                         });
                     }
-                    return origFillText.call(this, text, x, y, maxWidth);
+                    return origFillText.apply(this, arguments);
                 };
             }
         """)
