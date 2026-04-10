@@ -387,87 +387,25 @@ class CDPBrowserManager:
             if not self._book_loaded:
                 return None
 
-            if chapter_index == 0:
-                # 首章：处理前导页（封面/版权）→ 进入正文
-                # 不先清除 Canvas，因为前导页点击会填充新文本
-                self._inject_canvas_hook()
-                
-                # 自动点击通过前导页
-                max_clicks = 10
-                for _ in range(max_clicks):
-                    btn = self._find_text('开始阅读')
-                    if not btn:
-                        btn = self._find_text('阅读')
-                    if not btn:
-                        btn = self._find_text('下一页')
-                    if not btn:
-                        break  # 没有按钮了，可能已经在正文
-                    btn.click(force=True, timeout=3000)
-                    self._page.wait_for_timeout(600)
-                
-                # 等待正文 Canvas 渲染
-                self._wait_for_canvas_text(timeout_ms=10000)
-                extracted = self._extract_chapter_title_from_canvas()
-                self.state.chapter_uid = chapter_uid
-                return extracted or chapter_title or "未知章节"
-
-            # 非首章：通过目录面板跳转
-            # 清除旧 Canvas 文本
+            # 使用 weread_hash 直接跳转到目标章节的 URL
+            # 不再通过目录面板，避免目录不关闭导致无法提取内容
+            encoded_chapter = weread_hash(chapter_uid)
+            url = f"https://weread.qq.com/web/reader/{encoded_chapter}"
+            
+            # 清空旧 Canvas 文本
             self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
             
-            catalog_btn = self._page.query_selector('.readerControls_item.catalog')
-            if not catalog_btn:
-                return None
-            catalog_btn.click()
-            self._page.wait_for_timeout(800)
-
-            # 在目录中找到目标章节（按索引）
-            result = self._page.evaluate("""(targetIndex) => {
-                const items = document.querySelectorAll('.readerCatalog_list_item');
-                if (!items || items.length === 0) return { success: false };
-
-                if (targetIndex < 0 || targetIndex >= items.length) {
-                    return { success: false, reason: 'index out of range' };
-                }
-
-                const target = items[targetIndex];
-                const titleEl = target.querySelector('.readerCatalog_list_item_title_text, .readerCatalog_list_item_title');
-                if (titleEl) {
-                    titleEl.click();
-                    return { success: true };
-                }
-
-                target.click();
-                return { success: true };
-            }""", chapter_index)
-
-            if not result.get("success"):
-                catalog_btn = self._page.query_selector('.readerControls_item.catalog')
-                if catalog_btn:
-                    try:
-                        catalog_btn.click()
-                    except Exception:
-                        pass
-                return None
-
-            # 点击章节后，先关闭目录，再等待 Canvas 渲染
-            # 之前的问题：等待 Canvas 时目录还开着，关闭后 Canvas 可能未重新渲染
-            self._page.wait_for_timeout(800)
-            catalog_btn = self._page.query_selector('.readerControls_item.catalog')
-            if catalog_btn:
-                try:
-                    catalog_btn.click()
-                except Exception:
-                    pass
-
-            # 清空 Canvas 缓存，等待新章节的正文渲染
-            self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+            # 直接导航到章节 URL
+            self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            self._page.wait_for_timeout(2000)
+            
+            # 注入 Canvas 钩子（确保页面加载后也能捕获）
             self._inject_canvas_hook()
             
-            # 等待正文 Canvas 渲染完成（目录已关闭，页面稳定后）
+            # 等待正文 Canvas 渲染
             self._wait_for_canvas_text(timeout_ms=10000)
             
-            # 额外等待：确保 Canvas 渲染完全
+            # 额外等待确保渲染完全
             self._page.wait_for_timeout(1500)
 
             extracted_title = self._extract_chapter_title_from_canvas()
