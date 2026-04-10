@@ -92,7 +92,7 @@ class WeReadCLI:
     # ── 登录 ────────────────────────────────────────────────
 
     def check_login(self) -> bool:
-        """检查登录状态"""
+        """检查登录状态，如 Cookie 过期则尝试自动刷新"""
         if not self.login_manager.check_login():
             console.print("[yellow]⚠️  未找到登录信息[/yellow]\n")
             return False
@@ -103,9 +103,19 @@ class WeReadCLI:
             console.print(f"[green]✅ 已登录：{user.name} {vip_badge}[/green]\n")
             return True
 
-        console.print("[yellow]⚠️  发现本地 Cookie，但服务器验证失败[/yellow]")
-        console.print("[yellow]💡 将尝试使用，如失败请重新登录[/yellow]\n")
-        return True
+        # Cookie 验证失败，尝试刷新 wr_skey
+        console.print("[yellow]⚠️  Cookie 已过期，尝试自动刷新...[/yellow]")
+        if self.login_manager.refresh_skey():
+            # 刷新后重新验证
+            self.api._load_cookies()
+            user = self.api.check_login()
+            if user:
+                vip_badge = "👑 VIP" if user.is_vip else ""
+                console.print(f"[green]✅ Cookie 刷新成功！已登录：{user.name} {vip_badge}[/green]\n")
+                return True
+
+        console.print("[yellow]💡 Cookie 刷新失败或仍无效，需要重新登录[/yellow]\n")
+        return False
 
     def login(self):
         """登录"""

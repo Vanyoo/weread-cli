@@ -20,67 +20,96 @@ class QRLogin:
     def __init__(self, cookie_file: Optional[Path] = None):
         self.cookie_file = cookie_file or Path.home() / ".weread_cookies.json"
     
-    def _display_qr_terminal(self, qr_img_data: bytes) -> None:
-        """在终端渲染二维码，严格 1:1 视觉比例。
+    def _load_cookies(self) -> Dict[str, str]:
+        """从文件加载 Cookie"""
+        if self.cookie_file.exists():
+            try:
+                with open(self.cookie_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+    
+    def _save_cookies(self, cookies: Dict[str, str]) -> None:
+        """保存 Cookie 到文件（原子写入）"""
+        import os
+        self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = str(self.cookie_file) + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(cookies, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(self.cookie_file))
+    
+    def refresh_skey(self) -> bool:
+        """刷新 wr_skey，延长 Cookie 有效期。
         
-        终端字符：宽 ≈ 0.5em, 高 ≈ 1.0em → 字符高宽比 2:1
-        要得到 1:1 正方形：输出列数 = 行数 × 2
+        原理：调用微信读书 /web/login/renewal 接口，
+        从响应 Set-Cookie 头中提取新的 wr_skey。
         """
+        cookies = self._load_cookies()
+        if not cookies:
+            return False
+        
+        try:
+            resp = httpx.post(
+                "https://weread.qq.com/web/login/renewal",
+                cookies=cookies,
+                json={"rq": "/web/book/read", "ql": True},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Content-Type": "application/json",
+                },
+                follow_redirects=True,
+                timeout=10,
+            )
+            
+            # 从 Set-Cookie 提取新 wr_skey
+            set_cookie = resp.headers.get("set-cookie", "")
+            for part in set_cookie.split(";"):
+                part = part.strip()
+                if part.startswith("wr_skey="):
+                    new_skey = part.split("=")[1]
+                    cookies["wr_skey"] = new_skey
+                    self._save_cookies(cookies)
+                    print(f"✅ Cookie 刷新成功，新 wr_skey: {new_skey}")
+                    return True
+            
+            # 响应码正常但没有新 skey，可能 cookie 本身还有效
+            if resp.status_code == 200:
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"⚠️ Cookie 刷新失败: {e}")
+            return False
+    
+    def _display_qr_terminal(self, qr_img_data: bytes) -> None:
+        """在终端完整渲染二维码，不裁剪不缩放。"""
         from PIL import Image
         from io import BytesIO
         import shutil
         
         img = Image.open(BytesIO(qr_img_data)).convert('L')
-        bw = img.point(lambda p: 0 if p < 128 else 255)
-        bbox = bw.getbbox()
-        if bbox:
-            bw = bw.crop(bbox)
+        w, h = img.size
+        pixels = img.load()
         
-        w, h = bw.size
-        pixels = bw.load()
-        
+        # 终端可用宽度
         term_w = shutil.get_terminal_size().columns - 6
-        max_h = shutil.get_terminal_size().lines - 10
-        
-        # 终端字符 2:1 高宽比 → 列数 = 行数 × 2 才能视觉正方形
-        # 缩小 50%
-        target_rows = max(8, max_h // 4)   # 行数减半再减半
-        target_cols = target_rows * 2       # 列数 = 行数 × 2
-        
-        # 块大小：行采样步长 vs 列采样步长（列步长是行的一半）
-        block_y = max(1, h // target_rows)
-        block_x = max(1, w // target_cols)
-        
-        out_w = (w + block_x - 1) // block_x
-        out_h = (h + block_y - 1) // block_y
-        
-        # 取较小值确保完整正方形
-        size_rows = min(out_h, target_rows)
-        size_cols = min(out_w, size_rows * 2)
         
         print()
-        for _ in range(2):
-            print("  " + " " * size_cols)
         
-        for by in range(size_rows):
-            y_start = by * block_y
-            line = "  "
-            for bx in range(size_cols):
-                x_start = bx * block_x
-                total = 0
-                count = 0
-                for dy in range(block_y):
-                    for dx in range(block_x):
-                        px, py = x_start + dx, y_start + dy
-                        if px < w and py < h:
-                            total += pixels[px, py]
-                            count += 1
-                avg = total / count if count > 0 else 255
-                line += "█" if avg < 128 else " "
+        # 逐行完整渲染，不截断
+        for y in range(0, h, 2):
+            line = "  "  # 左侧缩进
+            for x in range(w):
+                line += "██" if pixels[x, y] < 128 else "  "
             print(line)
-        
-        for _ in range(2):
-            print("  " + " " * size_cols)
     
     def _open_qr_image(self, qr_img_data: bytes) -> tuple:
         """保存并打开二维码图片，返回路径"""
@@ -352,27 +381,6 @@ class QRLogin:
         
         print(f"\n\n⏳ 等待超时（{timeout} 秒）")
         return False
-    
-    def _save_cookies(self, cookies: Dict[str, str]) -> None:
-        """保存 Cookie 到文件（原子写入）"""
-        import os
-        self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = str(self.cookie_file) + ".tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(cookies, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, str(self.cookie_file))
-    
-    def _load_cookies(self) -> Dict[str, str]:
-        """从文件加载 Cookie"""
-        if self.cookie_file.exists():
-            try:
-                with open(self.cookie_file) as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
     
     def check_login(self) -> bool:
         """检查是否已登录（仅检查 Cookie 文件存在）"""
