@@ -25,7 +25,11 @@ class QRLogin:
         return self.login_via_qr()
     
     def _display_qr_terminal(self, qr_img_data: bytes) -> None:
-        """在终端渲染二维码，控制尺寸适应屏幕。"""
+        """在终端渲染二维码，控制尺寸适应屏幕。
+        
+        终端字符宽高比 ≈ 1:2（字符高度是宽度的2倍）。
+        所以：1 字符/列，每隔 2 行取 1 行 → 显示比例 ≈ 1:1
+        """
         from PIL import Image
         from io import BytesIO
         import shutil
@@ -39,31 +43,33 @@ class QRLogin:
         w, h = bw.size
         pixels = bw.load()
         
-        # 终端可用宽度
+        # 终端可用尺寸
         term_w = shutil.get_terminal_size().columns - 6
         max_h = shutil.get_terminal_size().lines - 10
         
-        # 计算采样步长：既要适配宽度也要适配高度
+        # 计算采样步长
+        # 1 字符/列 → 宽度需要 w/step <= term_w
+        # 每 2 行取 1 行 → 高度需要 h/(2*step) <= max_h
         step_x = max(1, (w + term_w - 1) // term_w)
-        step_y = max(1, ((h + 1) // 2 + max_h - 1) // max_h)
-        # 统一用较大的步长，保持正方形比例
+        step_y = max(1, (h + 2 * max_h - 1) // (2 * max_h))
         step = max(step_x, step_y)
         
         out_w = (w + step - 1) // step
+        out_h = (h + 2 * step - 1) // (2 * step)
         
         print()
         for _ in range(2):
-            print("  " + "  " * out_w)
+            print("  " + " " * out_w)
         
-        # 每隔 step*2 行取 1 行（行步长×2 补偿字符高宽比）
+        # 每隔 step*2 行取 1 行（补偿字符 2:1 高宽比）
         for y in range(0, h, step * 2):
             line = "  "
             for x in range(0, w, step):
-                line += "██" if pixels[x, y] == 0 else "  "
+                line += "█" if pixels[x, y] == 0 else " "
             print(line)
         
         for _ in range(2):
-            print("  " + "  " * out_w)
+            print("  " + " " * out_w)
     
     def _open_qr_image(self, qr_img_data: bytes) -> tuple:
         """保存并打开二维码图片，返回路径"""
