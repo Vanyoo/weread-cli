@@ -927,6 +927,105 @@ class CDPBrowserManager:
         except Exception:
             pass  # 最小化失败不影响后续流程
 
+    def is_page_stale(self) -> bool:
+        """检测页面是否过期（长时间驻留后需要刷新）。
+
+        判断依据：
+        1. Canvas 文本为空或极少（少于 5 条记录）
+        2. DOM 中 .readerChapterContent 为空
+        3. 页面出现刷新提示或登录弹窗
+        """
+        if not self.is_alive:
+            return True
+
+        try:
+            check = self._page.evaluate("""() => {
+                const canvasText = window.__CANVAS_TEXT__ || [];
+                const contentEl = document.querySelector('.readerChapterContent');
+                const bodyText = document.body ? document.body.innerText : '';
+
+                // 检测是否出现刷新提示
+                const hasRefreshPrompt = bodyText.includes('刷新') || bodyText.includes('页面已过期');
+
+                // 检测是否弹出登录框
+                const hasLoginOverlay = !!document.querySelector('.loginWrap, .loginContainer');
+
+                // 检测页面是否为空/白屏
+                const isEmptyPage = !contentEl && !document.querySelector('.readerTopBar');
+
+                // 检测 Canvas 文本是否足够
+                const hasCanvasText = canvasText.length > 5;
+
+                // 检测 DOM 内容是否足够
+                const hasDomContent = contentEl && contentEl.innerText.trim().length > 30;
+
+                return {
+                    stale: hasRefreshPrompt || hasLoginOverlay || isEmptyPage || (!hasCanvasText && !hasDomContent),
+                    reason: hasRefreshPrompt ? 'refresh_prompt' :
+                            hasLoginOverlay ? 'login_overlay' :
+                            isEmptyPage ? 'empty_page' :
+                            (!hasCanvasText && !hasDomContent) ? 'no_content' : null
+                };
+            }""")
+
+            return bool(check and check.get("stale", False))
+
+        except Exception:
+            return True
+
+    def refresh_current_page(self) -> bool:
+        """刷新当前页面并重新注入 Canvas 钩子。
+
+        使用当前书籍的 URL 重新导航，恢复 Canvas 文本拦截。
+        在页面长时间驻留导致内容加载失败时调用。
+        """
+        if not self.is_alive:
+            return False
+
+        if not self.state.book_id or not self.state.reader_url:
+            print("⚠️  没有当前书籍信息，无法刷新")
+            return False
+
+        try:
+            url = self.state.reader_url
+
+            # 清除旧 Canvas 文本
+            try:
+                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+            except Exception:
+                pass
+
+            print(f"🔄 正在刷新页面...")
+
+            # 重新导航到当前书籍页面（会触发完整重载 + 重新注入 init_script）
+            self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            self._page.wait_for_timeout(3000)
+
+            # 重新注入 Canvas 钩子（页面重载后 hook 丢失）
+            self._inject_canvas_hook()
+
+            # 等待内容渲染
+            canvas_ready = self._wait_for_canvas_text(timeout_ms=8000)
+
+            if canvas_ready:
+                print("✅ 页面刷新成功，内容已加载")
+                return True
+            else:
+                # Canvas 可能没有内容（如封面页），检查 DOM
+                dom_check = self._page.evaluate("""() => {
+                    const el = document.querySelector('.readerChapterContent');
+                    return el && el.innerText.trim().length > 30;
+                }""")
+                if dom_check:
+                    print("✅ 页面刷新成功（DOM 内容可用）")
+                    return True
+                print("⚠️  页面刷新后内容仍为空")
+                return False
+
+        except Exception as e:
+            print(f"❌ 页面刷新失败: {e}")
+            return False
+
     def screenshot(self, path: str = "/tmp/weread_page.png"):
         """截图当前页面（调试用）"""
         if self.is_alive:

@@ -448,7 +448,7 @@ class WeReadCLI:
                     # 分页显示内容（带章节信息 + 章跳转）
                     result = self._display_content(content_text, chapter_info, has_prev, has_next)
 
-                    # 处理阅读中的章节跳转
+                    # 处理阅读中的章节跳转 / 刷新
                     if result == "quit":
                         break
                     elif result == "prev_chapter":
@@ -461,36 +461,66 @@ class WeReadCLI:
                             self.current_chapter_index += 1
                             browser_navigated = False
                             continue
+                    elif result == "refresh":
+                        console.print("[yellow]🔄 正在刷新页面...[/yellow]")
+                        try:
+                            refresh_ok = browser.refresh_current_page()
+                            if refresh_ok:
+                                browser_navigated = True
+                                continue
+                            else:
+                                console.print("[red]❌ 刷新失败[/red]")
+                        except Exception as e:
+                            console.print(f"[red]⚠️ 刷新异常: {e}[/red]")
                 else:
-                    console.print("[yellow]⚠️  无法获取内容，尝试翻页...[/yellow]")
-                    try:
-                        browser.next_page()
-                        browser._page.wait_for_timeout(1000)
-                        fb_raw = browser.get_content_with_title()
-                        if fb_raw:
-                            fb_text = fb_raw.get("content", "") if isinstance(fb_raw, dict) else fb_raw.content
-                            if fb_text and len(fb_text) > 30:
-                                total_chaps = len(self.current_chapters)
-                                chapter_info = f"第 {self.current_chapter_index + 1}/{total_chaps} 章 · {chapter.title if chapter else ''}"
-                                has_prev = self.current_chapter_index > 0
-                                has_next = self.current_chapter_index < total_chaps - 1
-                                result = self._display_content(fb_text, chapter_info, has_prev, has_next)
-                                if result == "quit":
-                                    break
-                                elif result == "prev_chapter" and self.current_chapter_index > 0:
-                                    self.current_chapter_index -= 1
-                                    browser_navigated = False
-                                    continue
-                                elif result == "next_chapter" and self.current_chapter_index < total_chaps - 1:
-                                    self.current_chapter_index += 1
-                                    browser_navigated = False
-                                    continue
+                    # 内容为空，检测页面是否过期
+                    if browser.is_page_stale():
+                        console.print("[yellow]⚠️  页面可能已过期，自动刷新中...[/yellow]")
+                        try:
+                            refresh_ok = browser.refresh_current_page()
+                            if refresh_ok:
+                                browser_navigated = True
+                                continue  # 重新进入循环获取内容
+                            else:
+                                console.print("[red]❌ 自动刷新失败[/red]")
+                        except Exception as e:
+                            console.print(f"[red]⚠️  自动刷新异常: {e}[/red]")
+                    else:
+                        console.print("[yellow]⚠️  无法获取内容，尝试翻页...[/yellow]")
+                        try:
+                            browser.next_page()
+                            browser._page.wait_for_timeout(1000)
+                            fb_raw = browser.get_content_with_title()
+                            if fb_raw:
+                                fb_text = fb_raw.get("content", "") if isinstance(fb_raw, dict) else fb_raw.content
+                                if fb_text and len(fb_text) > 30:
+                                    total_chaps = len(self.current_chapters)
+                                    chapter_info = f"第 {self.current_chapter_index + 1}/{total_chaps} 章 · {chapter.title if chapter else ''}"
+                                    has_prev = self.current_chapter_index > 0
+                                    has_next = self.current_chapter_index < total_chaps - 1
+                                    result = self._display_content(fb_text, chapter_info, has_prev, has_next)
+                                    if result == "quit":
+                                        break
+                                    elif result == "prev_chapter" and self.current_chapter_index > 0:
+                                        self.current_chapter_index -= 1
+                                        browser_navigated = False
+                                        continue
+                                    elif result == "next_chapter" and self.current_chapter_index < total_chaps - 1:
+                                        self.current_chapter_index += 1
+                                        browser_navigated = False
+                                        continue
+                                    elif result == "refresh":
+                                        console.print("[yellow]🔄 正在刷新页面...[/yellow]")
+                                        refresh_ok = browser.refresh_current_page()
+                                        if refresh_ok:
+                                            browser_navigated = True
+                                            continue
+                                else:
+                                    console.print("[yellow]⚠️  翻页后仍无内容，按 n 进入下一章[/yellow]")
                             else:
                                 console.print("[yellow]⚠️  翻页后仍无内容，按 n 进入下一章[/yellow]")
-                        else:
-                            console.print("[yellow]⚠️  翻页后仍无内容，按 n 进入下一章[/yellow]")
-                    except Exception:
-                        console.print("[red]⚠️  翻页失败，页面可能已变化[/red]")
+                        except Exception:
+                            console.print("[red]⚠️  翻页失败，页面可能已变化[/red]")
 
                 # 操作菜单（根据当前位置动态显示选项）
                 console.print()
@@ -506,6 +536,7 @@ class WeReadCLI:
                 menu_items.append("  [cyan]p[/cyan] - 上一章" if self.current_chapter_index > 0 else "  [dim]p[/dim] - 已是第一章")
                 menu_items.append("  [cyan]f[/cyan] - 下一页")
                 menu_items.append("  [cyan]b[/cyan] - 上一页")  # 始终显示，浏览器会处理边界
+                menu_items.append("  [cyan]r[/cyan] - 刷新页面")
                 menu_items.append("  [cyan]c[/cyan] - 章节列表")
                 menu_items.append("  [cyan]q[/cyan] - 返回主菜单")
                 
@@ -519,7 +550,7 @@ class WeReadCLI:
 
                 action = Prompt.ask(
                     "请选择",
-                    choices=["n", "p", "f", "b", "c", "q"],
+                    choices=["n", "p", "f", "b", "r", "c", "q"],
                     default="n"
                 )
 
@@ -586,6 +617,18 @@ class WeReadCLI:
                             console.print("[yellow]⚠️ 没有上一页了[/yellow]")
                     except Exception as e:
                         console.print(f"[red]⚠️ 上一页异常: {e}[/red]")
+                elif action == "r":
+                    try:
+                        console.print("[yellow]🔄 正在刷新页面...[/yellow]")
+                        success = browser.refresh_current_page()
+                        if success:
+                            browser_navigated = True
+                            # 重新获取章节 URL 状态
+                            browser._page.wait_for_timeout(1000)
+                        else:
+                            console.print("[red]❌ 刷新失败[/red]")
+                    except Exception as e:
+                        console.print(f"[red]⚠️ 刷新异常: {e}[/red]")
                 elif action == "c":
                     try:
                         self.show_chapters()
@@ -631,7 +674,7 @@ class WeReadCLI:
             has_next_chapter: 是否有下一章可跳转
 
         Returns:
-            用户操作：'continue'（继续操作菜单）、'prev_chapter'、'next_chapter'、'quit'
+            用户操作：'continue'（继续操作菜单）、'prev_chapter'、'next_chapter'、'refresh'、'quit'
         """
         try:
             if not text or not text.strip():
@@ -666,7 +709,7 @@ class WeReadCLI:
                 console.print(f"\n[dim]— 第 {page + 1}/{total_pages} 页 —[/dim]\n")
 
                 if page < total_pages - 1:
-                    # 非最后一页：可以上下翻页、跳章节、退出
+                    # 非最后一页：可以上下翻页、跳章节、刷新、退出
                     choices = [""]
                     hints = "Enter 下一页"
                     if page > 0:
@@ -678,6 +721,8 @@ class WeReadCLI:
                     if has_next_chapter:
                         choices.append("n")
                         hints += "，n 下一章"
+                    choices.append("r")
+                    hints += "，r 刷新页面"
                     choices.append("q")
                     hints += "，q 返回"
 
@@ -688,6 +733,8 @@ class WeReadCLI:
                         return "prev_chapter"
                     elif next_action == "n":
                         return "next_chapter"
+                    elif next_action == "r":
+                        return "refresh"
                     elif next_action == "b":
                         if page > 0:
                             page -= 1
@@ -705,6 +752,8 @@ class WeReadCLI:
                     if has_next_chapter:
                         choices.append("n")
                         hints += "，n 下一章"
+                    choices.append("r")
+                    hints += "，r 刷新页面"
                     choices.append("q")
                     hints += "，q 返回"
 
@@ -715,6 +764,8 @@ class WeReadCLI:
                         return "prev_chapter"
                     elif next_action == "n":
                         return "next_chapter"
+                    elif next_action == "r":
+                        return "refresh"
                     elif next_action == "b":
                         if page > 0:
                             page -= 1
@@ -799,13 +850,12 @@ def main():
     cli = WeReadCLI()
     cli._setup_signals()
 
-    banner = """
- ███████╗██╗  ██╗ █████╗ ███████╗██╗  ██╗ 
- ██╔════╝██║  ██║██╔══██╗██╔════╝██║  ██║ 
- ███████╗███████║███████║███████╗███████║ 
- ╚════██║██╔══██║██╔══██║╚════██║██╔══██║ 
- ███████║██║  ██║██║  ██║███████║██║  ██║ 
- ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ 
+    banner = r"""
+ _       ____________  _________    ____     ________    ____
+| |     / / ____/ __ \/ ____/   |  / __ \   / ____/ /   /  _/
+| | /| / / __/ / /_/ / __/ / /| | / / / /  / /   / /    / /
+| |/ |/ / /___/ _, _/ /___/ ___ |/ /_/ /  / /___/ /____/ /
+|__/|__/_____/_/ |_/_____/_/  |_/_____/   \____/_____/___/
     """
     console.print(Panel(
         "[bold blue]" + banner + "[/bold blue]\n"
