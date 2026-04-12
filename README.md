@@ -1,152 +1,155 @@
-# WeRead CLI
+# WeRead CLI - 微信读书命令行工具
 
-命令行微信读书工具 - 在终端中阅读微信读书
+在终端中阅读微信读书，通过 CDP 浏览器实时渲染内容并提取文本。
 
 ## ✨ 功能特性
 
-- 🔐 **登录/退出**
-  - 浏览器登录（最可靠）
-  - 从 Chrome/Firefox 导入 Cookie
-  - Cookie 自动保存
-  - 登录状态检测
-
-- 📚 **书架管理**
-  - 查看个人书架
-  - 显示阅读进度
-  - 支持搜索（按书名/作者）
-
-- 📖 **阅读功能**
-  - 章节导航
-  - 上一章/下一章切换
-  - VIP 章节标识
-  - 使用 Playwright 获取内容
+- 🔐 **登录管理** — 终端二维码登录 / 从浏览器导入 Cookie
+- 🔄 **Cookie 自动刷新** — 每次登录检查自动刷新 `wr_skey`，主菜单支持手动刷新
+- 📚 **书架管理** — 查看完整书架，在线搜索
+- 📖 **CDP 阅读模式** — 通过 Chrome DevTools Protocol 连接浏览器，实时渲染提取文本
+- ⚡ **Loading 动画** — 所有 API 调用显示终端旋转动画
+- 💾 **阅读进度持久化** — 自动保存/恢复上次阅读进度
 
 ## 📦 安装
 
-### 1. 安装依赖
-
 ```bash
-cd ~/Developer/weread-cli
-python3 -m pip install -e .
+cd ~/Desktop/weread-cli
+pip install -e .
+python -m playwright install chromium  # 仅二维码登录需要
 ```
 
-### 2. 安装 Playwright
+## 🚀 快速开始
 
 ```bash
-python3 -m playwright install chromium
-```
+# 登录（终端显示二维码）
+weread-cli login
 
-### 3. 添加 PATH（可选）
-
-```bash
-# 添加到 ~/.zshrc
-echo 'export PATH="$HOME/Library/Python/3.9/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-## 🚀 使用
-
-### 启动程序
-
-```bash
-# 方式 1：使用完整路径
-~/Library/Python/3.9/bin/weread-cli
-
-# 方式 2：如果已添加 PATH
+# 进入交互模式
 weread-cli
-
-# 方式 3：使用启动脚本
-./run.sh
 ```
 
-### 首次登录
+## 📋 命令
 
-1. 运行 `weread-cli`
-2. 选择"浏览器登录"（选项 1）
-3. 在打开的浏览器中登录微信读书
-4. 登录后程序会自动保存 Cookie
+| 命令 | 说明 |
+|------|------|
+| `weread-cli` | 进入交互模式 |
+| `weread-cli login` | 登录 |
+| `weread-cli logout` | 退出登录 |
 
-### 主菜单
+## 🎮 交互菜单
 
 ```
 主菜单：
-  1 - 我的书架
+  1 - 我的书架（输入序号直接阅读）
   2 - 搜索书籍
-  3 - 选择书籍阅读
-  4 - 登录
-  5 - 退出登录
+  3 - 继续阅读
+  4 - 刷新 Cookie        ← 手动刷新登录凭证
+  5 - 登录
+  6 - 退出登录
   0 - 退出
 ```
 
-### 阅读界面快捷键
+### 阅读模式快捷键
 
-- `n` - 下一章
-- `p` - 上一章
-- `c` - 章节列表
-- `q` - 返回
+| 按键 | 功能 |
+|------|------|
+| `n` | 下一章 |
+| `p` | 上一章 |
+| `f` | 下一页 |
+| `b` | 上一页 |
+| `r` | 刷新页面 |
+| `c` | 章节列表 |
+| `q` | 返回主菜单 |
 
-## 💡 使用技巧
+## 🔄 Cookie 刷新机制
 
-### 快速登录
+| Cookie | 说明 | 有效期 |
+|--------|------|--------|
+| `wr_skey` | 短期 Session Key | ~1.5 小时 |
+| `wr_rt` | 长期 Refresh Token | ~1 年 |
 
-```bash
-# 使用独立登录脚本
-python3 login.py
-```
+**自动刷新**：每次检查登录状态时，如果 Cookie 过期会自动调用 `/web/login/renewal` 刷新 `wr_skey`。
 
-### 搜索书籍
+**手动刷新**：主菜单选项 `4 - 刷新 Cookie`，或代码调用 `api.refresh_cookies()`。
 
-在主菜单选择搜索，输入关键词即可查找书架中的书籍。
-
-### 阅读进度
-
-程序会显示每本书的阅读进度百分比。
-
-## ⚠️ 注意事项
-
-- **Cookie 有效期**：Cookie 会过期，过期后需要重新登录
-- **VIP 内容**：部分章节需要微信读书会员才能阅读
-- **网络要求**：需要稳定的网络连接
-- **首次使用**：需要安装 Playwright Chromium（约 100MB）
-
-## 🛠️ 故障排除
-
-### 找不到命令
-
-```bash
-# 使用完整路径
-~/Library/Python/3.9/bin/weread-cli
-```
-
-### Cookie 过期
-
-```bash
-# 删除旧 Cookie
-rm ~/.weread_cookies.json
-
-# 重新登录
-weread-cli
-```
-
-### Playwright 问题
-
-```bash
-# 重新安装 Chromium
-python3 -m playwright install chromium
-```
+只要 `wr_rt` 有效，无需重新登录。
 
 ## 📁 项目结构
 
 ```
 weread-cli/
-├── weread_cli/          # 主程序包
-│   ├── api.py          # WeRead API
-│   ├── login.py        # 登录管理
+├── weread_cli/
+│   ├── api.py          # WeRead API 封装（含 Cookie 管理/刷新）
+│   ├── browser.py      # CDP 浏览器管理器
+│   ├── canvas_extractor.py  # Canvas 文本提取
+│   ├── loading.py      # Terminal Loading 动画
+│   ├── login.py        # 二维码登录管理
 │   ├── main.py         # CLI 主程序
 │   └── models.py       # 数据模型
-├── login.py            # 独立登录脚本
-├── run.sh              # 快速启动脚本
-└── README.md           # 本文档
+├── pyproject.toml      # 项目配置
+├── INSTALL.md          # 安装说明
+├── QUICK_START.md      # 快速入门
+└── README.md
+```
+
+### 核心模块
+
+**`api.py` — WeReadAPI 类**
+
+| 方法 | 说明 |
+|------|------|
+| `check_login()` | 检查登录状态（GET /web/user） |
+| `get_bookshelf()` | 获取书架（GET /web/shelf/sync） |
+| `get_book_progress()` | 获取单本书阅读进度 |
+| `get_chapters()` | 获取章节列表（POST /web/book/chapterInfos） |
+| `get_chapter_content()` | 通过 CDP 浏览器获取章节内容 |
+| `refresh_cookies()` | 刷新 Cookie（POST /web/login/renewal） |
+| `search_books()` | 搜索书架 |
+| `import_from_browser()` | 从浏览器导入 Cookie |
+| `next_page()` / `prev_page()` | 翻页 |
+| `next_chapter()` / `prev_chapter()` | 上下章 |
+| `close()` | 关闭浏览器 |
+
+**`browser.py` — CDPBrowserManager 类**
+
+通过 Chrome DevTools Protocol 连接运行中的 Chrome/Chromium 浏览器，实现：
+- 导航到书籍页面
+- 跳转章节
+- 翻页（上一页/下一页）
+- 通过 Canvas 钩子提取渲染后的文本
+
+**`canvas_extractor.py` — 文本提取**
+
+从微信读书 Canvas 渲染的页面中重建文本内容。
+
+**`loading.py` — LoadingSpinner 类**
+
+终端 Loading 动画，4 帧循环：`Loading   ` → `Loading.  ` → `Loading.. ` → `Loading...`
+
+## 🛠️ 故障排除
+
+### Cookie 失效
+
+```bash
+weread-cli  # 选 4 - 刷新 Cookie
+
+# 或完全重新登录
+rm ~/.weread_cookies.json
+weread-cli login
+```
+
+### Playwright 问题
+
+```bash
+python -m playwright install chromium
+```
+
+### 找不到命令
+
+```bash
+cd ~/Desktop/weread-cli
+python -m weread_cli
 ```
 
 ## 📄 License

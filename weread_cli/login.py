@@ -55,7 +55,7 @@ class QRLogin:
             resp = httpx.post(
                 "https://weread.qq.com/web/login/renewal",
                 cookies=cookies,
-                json={"rq": "/web/book/read", "ql": True},
+                json={},
                 headers={
                     "User-Agent": (
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -68,15 +68,30 @@ class QRLogin:
                 timeout=10,
             )
             
-            # 从 Set-Cookie 提取新 wr_skey
-            set_cookie = resp.headers.get("set-cookie", "")
-            for part in set_cookie.split(";"):
-                part = part.strip()
-                if part.startswith("wr_skey="):
-                    new_skey = part.split("=")[1]
-                    cookies["wr_skey"] = new_skey
+            # 检查响应：成功返回 {"succ": 1}
+            try:
+                body = resp.json()
+                if body.get("errCode") == -2013:
+                    print("❌ 刷新令牌（wr_rt）已过期，需要重新登录")
+                    return False
+                elif body.get("errCode", 0) != 0 and not body.get("succ"):
+                    print(f"⚠️  刷新返回错误: {body}")
+                    return False
+            except:
+                pass
+            
+            # 从 Set-Cookie 提取新 wr_skey（只取非空且非过期的）
+            for h in resp.headers.get_list("set-cookie"):
+                name_value, _, attrs = h.partition(";")
+                if "=" not in name_value:
+                    continue
+                name, value = name_value.split("=", 1)
+                name = name.strip()
+                value = value.strip()
+                if name == "wr_skey" and value and "Expires=Thu, 01 Jan 1970" not in h:
+                    cookies["wr_skey"] = value
                     self._save_cookies(cookies)
-                    print(f"✅ Cookie 刷新成功，新 wr_skey: {new_skey}")
+                    print(f"✅ Cookie 刷新成功，新 wr_skey: {value}")
                     return True
             
             # 响应码正常但没有新 skey，可能 cookie 本身还有效

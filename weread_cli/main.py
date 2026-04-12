@@ -155,6 +155,14 @@ class WeReadCLI:
         """退出登录"""
         self.login_manager.logout()
 
+    def refresh_cookies(self):
+        """手动刷新 Cookie"""
+        console.print("\n[yellow]正在刷新 Cookie...[/yellow]")
+        if self.api.refresh_cookies():
+            console.print("[green]✅ Cookie 刷新成功！[/green]\n")
+        else:
+            console.print("[red]❌ Cookie 刷新失败[/red]\n")
+
     # ── 书架 ────────────────────────────────────────────────
 
     def show_bookshelf(self, interactive: bool = False) -> Optional[List[Book]]:
@@ -789,13 +797,14 @@ class WeReadCLI:
             console.print("  [cyan]1[/cyan] - 我的书架（输入序号直接阅读）")
             console.print("  [cyan]2[/cyan] - 搜索书籍")
             console.print("  [cyan]3[/cyan] - 继续阅读")
-            console.print("  [cyan]4[/cyan] - 登录")
-            console.print("  [cyan]5[/cyan] - 退出登录")
+            console.print("  [cyan]4[/cyan] - 刷新 Cookie")
+            console.print("  [cyan]5[/cyan] - 登录")
+            console.print("  [cyan]6[/cyan] - 退出登录")
             console.print("  [cyan]0[/cyan] - 退出")
 
             choice = Prompt.ask(
                 "请选择",
-                choices=["0", "1", "2", "3", "4", "5"],
+                choices=["0", "1", "2", "3", "4", "5", "6"],
                 default="1"
             )
 
@@ -826,8 +835,10 @@ class WeReadCLI:
                     else:
                         console.print("[yellow]⚠️  还没有阅读记录，请从书架或搜索中选择[/yellow]\n")
             elif choice == "4":
-                self.login()
+                self.refresh_cookies()
             elif choice == "5":
+                self.login()
+            elif choice == "6":
                 self.logout()
             elif choice == "0":
                 # 保存阅读进度

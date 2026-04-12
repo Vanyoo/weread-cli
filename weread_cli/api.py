@@ -16,6 +16,7 @@ from typing import Optional, List, Dict
 
 from .models import Book, Chapter, BookContent, UserInfo
 from .browser import CDPBrowserManager
+from .loading import LoadingSpinner
 
 
 class WeReadAPI:
@@ -130,11 +131,14 @@ class WeReadAPI:
             return None
 
         try:
+            spinner = LoadingSpinner()
+            spinner.start()
             resp = self.client.get(
                 f"{self.BASE_URL}/web/user",
                 params={"userVid": vid},
                 timeout=10
             )
+            spinner.stop()
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("userVid"):
@@ -157,7 +161,10 @@ class WeReadAPI:
         """
         books = []
         try:
+            spinner = LoadingSpinner("获取书架中")
+            spinner.start()
             resp = self.client.get(f"{self.BASE_URL}/web/shelf/sync")
+            spinner.stop()
             if resp.status_code == 200:
                 data = resp.json()
                 book_progress = data.get("bookProgress", [])
@@ -223,10 +230,13 @@ class WeReadAPI:
         """
         chapters = []
         try:
+            spinner = LoadingSpinner("获取章节中")
+            spinner.start()
             resp = self.client.post(
                 f"{self.BASE_URL}/web/book/chapterInfos",
                 json={"bookIds": [book_id]}
             )
+            spinner.stop()
             if resp.status_code == 200:
                 data = resp.json()
                 book_data = data.get("data", [{}])[0]
@@ -333,12 +343,95 @@ class WeReadAPI:
 
     def search_books(self, query: str) -> List[Book]:
         """搜索书架中的书籍"""
+        spinner = LoadingSpinner("搜索中")
+        spinner.start()
         books = self.get_bookshelf()
+        spinner.stop()
         query_lower = query.lower()
         return [
             book for book in books
             if query_lower in book.title.lower() or query_lower in book.author.lower()
         ]
+
+    def refresh_cookies(self) -> bool:
+        """刷新 Cookie（调用 /web/login/renewal 获取新 wr_skey）
+
+        只要 wr_rt 有效，访问刷新接口即可获取新的 wr_skey。
+        如果 wr_rt 也过期，返回 False，需要重新登录。
+        """
+        if "wr_rt" not in self._cookies:
+            print("❌ 缺少 wr_rt（刷新令牌），无法刷新 Cookie")
+            print("💡 请重新登录：weread-cli login")
+            return False
+
+        try:
+            spinner = LoadingSpinner("刷新 Cookie 中")
+            spinner.start()
+            resp = httpx.post(
+                f"{self.BASE_URL}/web/login/renewal",
+                cookies=self._cookies,
+                json={},
+                headers={
+                    "User-Agent": self.client.headers["User-Agent"],
+                    "Content-Type": "application/json",
+                },
+                follow_redirects=True,
+                timeout=10,
+            )
+            spinner.stop()
+
+            # 检查响应
+            try:
+                body = resp.json()
+                # renewal 成功时返回 {"succ": 1} + Set-Cookie 新 wr_skey
+                # 失败时可能返回 {"errCode": -2013, "errMsg": "鉴权失败"}
+                if body.get("errCode", 0) == -2013:
+                    print("❌ 刷新令牌（wr_rt）已过期，需要重新登录")
+                    print("💡 请运行：weread-cli login")
+                    return False
+                elif body.get("errCode", 0) != 0 and not body.get("succ"):
+                    print(f"⚠️  刷新返回错误: {body}")
+            except:
+                pass
+
+            # 解析 Set-Cookie，只取非空且非过期的值
+            new_cookies = {}
+            for h in resp.headers.get_list("set-cookie"):
+                name_value, _, attrs = h.partition(";")
+                if "=" not in name_value:
+                    continue
+                name, value = name_value.split("=", 1)
+                name = name.strip()
+                value = value.strip()
+                if not value:
+                    continue
+                if "Expires=Thu, 01 Jan 1970" in h:
+                    continue
+                new_cookies[name] = value
+
+            if "wr_skey" in new_cookies:
+                old_skey = self._cookies.get("wr_skey", "")
+                new_skey = new_cookies["wr_skey"]
+                self._cookies["wr_skey"] = new_skey
+                self.client.cookies.set("wr_skey", new_skey, domain=".weread.qq.com")
+                self._save_cookies()
+                if old_skey != new_skey:
+                    print(f"✅ Cookie 已刷新（wr_skey: {old_skey} → {new_skey}）")
+                else:
+                    print("✅ Cookie 仍然有效")
+                return True
+
+            # 响应正常但没新 skey，可能 cookie 还有效
+            if resp.status_code == 200:
+                print("✅ Cookie 仍然有效")
+                return True
+
+            print(f"❌ 刷新失败，响应状态：{resp.status_code}")
+            return False
+
+        except Exception as e:
+            print(f"❌ 刷新 Cookie 异常：{e}")
+            return False
 
     def close(self):
         """关闭浏览器（程序退出时调用）"""
