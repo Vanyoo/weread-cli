@@ -105,26 +105,62 @@ class QRLogin:
             return False
     
     def _display_qr_terminal(self, qr_img_data: bytes) -> None:
-        """在终端完整渲染二维码，不裁剪不缩放。"""
+        """使用半块字符 (▀/▄) 渲染二维码，提高分辨率和可扫描性。"""
         from PIL import Image
         from io import BytesIO
         import shutil
         
         img = Image.open(BytesIO(qr_img_data)).convert('L')
-        w, h = img.size
-        pixels = img.load()
+        cols, rows = shutil.get_terminal_size((80, 24))
         
-        # 终端可用宽度
-        term_w = shutil.get_terminal_size().columns - 6
+        # 计算适应终端的最大尺寸
+        # 半块字符: 1字符宽=1像素, 1字符高=2像素
+        # 预留边距和提示文字空间
+        pad_v = 6
+        pad_h = 4
+        
+        max_h_chars = rows - pad_v
+        max_w_chars = cols - pad_h
+        
+        max_h_pix = max_h_chars * 2
+        max_w_pix = max_w_chars
+        
+        size = min(max_w_pix, max_h_pix)
+        # 限制范围，确保清晰且不溢出
+        size = max(20, min(size, 80))
+        if size % 2 != 0:
+            size -= 1
+            
+        img = img.resize((size, size), Image.LANCZOS)
         
         print()
+        print("  请打开微信 → 扫一扫 → 扫描二维码：")
+        print()
         
-        # 逐行完整渲染，不截断
-        for y in range(0, h, 2):
-            line = "  "  # 左侧缩进
-            for x in range(w):
-                line += "██" if pixels[x, y] < 128 else "  "
+        # 垂直 Quiet Zone
+        print()
+        print()
+        
+        pixels = img.load()
+        for y in range(0, size, 2):
+            line = "  "  # 水平 Quiet Zone 左
+            for x in range(size):
+                top = pixels[x, y] < 128
+                bottom = pixels[x, y+1] < 128 if y+1 < size else False
+                
+                if top and bottom:
+                    line += "█"
+                elif top:
+                    line += "▀"
+                elif bottom:
+                    line += "▄"
+                else:
+                    line += " "
+            line += "  "  # 水平 Quiet Zone 右
             print(line)
+            
+        print()
+        print()
     
     def _open_qr_image(self, qr_img_data: bytes) -> tuple:
         """保存并打开二维码图片，返回路径"""
@@ -391,6 +427,15 @@ class QRLogin:
                 page.wait_for_timeout(2000)
                 
             except Exception as e:
+                err_msg = str(e)
+                # 扫码确认后页面通常会跳转/刷新，导致上下文销毁，这视为登录成功
+                if "Execution context was destroyed" in err_msg or "Navigation failed" in err_msg:
+                    print("\n✅ 检测到页面跳转，登录成功！")
+                    try:
+                        page.wait_for_timeout(2000)
+                    except:
+                        pass
+                    return True
                 print(f"\n检测错误：{e}")
                 page.wait_for_timeout(2000)
         
