@@ -47,11 +47,16 @@ class WeReadAPI:
     # ── Cookie 管理 ─────────────────────────────────────────
 
     def _load_cookies(self) -> bool:
-        """从文件加载 Cookie"""
+        """从文件加载 Cookie（兼容 dict 和 Playwright 数组格式）"""
         if self.cookie_file.exists():
             try:
                 with open(self.cookie_file) as f:
-                    self._cookies = json.load(f)
+                    data = json.load(f)
+                # 兼容 Playwright 数组格式 → 转为 dict
+                if isinstance(data, list):
+                    self._cookies = {c.get("name", ""): c.get("value", "") for c in data if c.get("name")}
+                else:
+                    self._cookies = data
                 if not self._cookies:
                     return False
                 for name, value in self._cookies.items():

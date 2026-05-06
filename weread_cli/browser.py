@@ -98,11 +98,15 @@ class CDPBrowserManager:
 
     def __init__(
         self,
-        cookies: Dict[str, str],
+        cookies,  # Dict[str, str] or List[dict]
         mode: str = "headed",  # "headed" | "headless" | "cdp"
         cdp_url: str = "http://localhost:9222",
     ):
-        self.cookies = cookies
+        # 兼容 dict 和 Playwright 数组格式
+        if isinstance(cookies, list):
+            self.cookies = {c.get("name", ""): c.get("value", "") for c in cookies if c.get("name")}
+        else:
+            self.cookies = cookies or {}
         self.mode = mode
         self.cdp_url = cdp_url
 

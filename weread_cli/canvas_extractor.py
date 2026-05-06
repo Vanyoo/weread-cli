@@ -90,7 +90,21 @@ def reconstruct_text_from_canvas(captured: List[Dict]) -> str:
                     item["text"] != cleaned[-1]["text"]):
                 cleaned.append(item)
 
-        line_text = "".join(item["text"] for item in cleaned).strip()
+        # 拼接行内文本，英文单词间根据 x 坐标间隙插入空格
+        parts = []
+        prev_item = None
+        for item in cleaned:
+            if prev_item is not None:
+                gap = item["x"] - prev_item["x"]
+                prev_text = prev_item["text"]
+                prev_w = max(len(prev_text) * 7, 7)  # 估算前一个字符的宽度
+                is_english = prev_text.isascii() and prev_text.isalpha()
+                # 英文字符且间隙明显大于单字宽度 → 插入空格
+                if is_english and gap > prev_w * 1.5:
+                    parts.append(" ")
+            parts.append(item["text"])
+            prev_item = item
+        line_text = "".join(parts).strip()
         if line_text:
             processed_lines.append((line_items[0].get("y", 0), line_text))
 
@@ -125,6 +139,11 @@ def reconstruct_text_from_canvas(captured: List[Dict]) -> str:
                 current_paragraph = []
 
         if line_text:
+            if current_paragraph:
+                prev_para_text = current_paragraph[-1]
+                # 上一段尾字符和当前行首字符都是英文 → 插入空格防止断行粘连
+                if prev_para_text and prev_para_text[-1].isascii() and prev_para_text[-1].isalpha() and line_text[0].isascii() and line_text[0].isalpha():
+                    current_paragraph.append(" ")
             current_paragraph.append(line_text)
         prev_y = y
 

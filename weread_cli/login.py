@@ -21,11 +21,15 @@ class QRLogin:
         self.cookie_file = cookie_file or Path.home() / ".weread_cookies.json"
     
     def _load_cookies(self) -> Dict[str, str]:
-        """从文件加载 Cookie"""
+        """从文件加载 Cookie（兼容 dict 和 Playwright 数组格式）"""
         if self.cookie_file.exists():
             try:
                 with open(self.cookie_file) as f:
-                    return json.load(f)
+                    data = json.load(f)
+                # 兼容 Playwright 数组格式
+                if isinstance(data, list):
+                    return {c.get("name", ""): c.get("value", "") for c in data if c.get("name")}
+                return data
             except Exception:
                 pass
         return {}
@@ -445,7 +449,13 @@ class QRLogin:
     def check_login(self) -> bool:
         """检查是否已登录（仅检查 Cookie 文件存在）"""
         cookies = self._load_cookies()
-        return 'wr_vid' in cookies and 'wr_skey' in cookies
+        if not cookies:
+            return False
+        # 兼容 dict 和 Playwright 数组格式
+        if isinstance(cookies, list):
+            names = {c.get("name", "") for c in cookies}
+            return "wr_vid" in names and "wr_skey" in names
+        return "wr_vid" in cookies and "wr_skey" in cookies
     
     def logout(self) -> None:
         """退出登录"""
