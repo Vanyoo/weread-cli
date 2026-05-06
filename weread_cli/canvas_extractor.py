@@ -90,20 +90,34 @@ def reconstruct_text_from_canvas(captured: List[Dict]) -> str:
                     item["text"] != cleaned[-1]["text"]):
                 cleaned.append(item)
 
-        # 拼接行内文本，英文单词间根据 x 坐标间隙插入空格
+        # 拼接行内文本 — 动态统计字符间距，只在单词间大间隙处插入空格
+        # 先计算行内相邻字符的平均间距，以区分「词内间距」和「词间空格」
+        gaps = []
+        for i in range(1, len(cleaned)):
+            g = cleaned[i]["x"] - cleaned[i-1]["x"]
+            prev_t = cleaned[i-1]["text"]
+            # 只统计英文字符之间的间距
+            if prev_t.isascii() and prev_t.isalpha() and cleaned[i]["text"].isascii() and cleaned[i]["text"].isalpha():
+                gaps.append(g)
+
+        # 用中位数作为词内基准间距
+        if gaps:
+            sorted_gaps = sorted(gaps)
+            median_gap = sorted_gaps[len(sorted_gaps) // 2]
+            space_threshold = median_gap * 2.5  # 词间间隙通常显著大于词内间距
+        else:
+            space_threshold = None  # 无英文连续字符，不加空格
+
         parts = []
-        prev_item = None
-        for item in cleaned:
-            if prev_item is not None:
-                gap = item["x"] - prev_item["x"]
-                prev_text = prev_item["text"]
-                prev_w = max(len(prev_text) * 7, 7)  # 估算前一个字符的宽度
-                is_english = prev_text.isascii() and prev_text.isalpha()
-                # 英文字符且间隙明显大于单字宽度 → 插入空格
-                if is_english and gap > prev_w * 1.5:
+        for i, item in enumerate(cleaned):
+            if i > 0 and space_threshold is not None:
+                gap = item["x"] - cleaned[i-1]["x"]
+                prev_t = cleaned[i-1]["text"]
+                cur_t = item["text"]
+                # 只有当前后都是英文且间隙超过阈值时才插入空格
+                if prev_t.isascii() and prev_t.isalpha() and cur_t.isascii() and cur_t.isalpha() and gap > space_threshold:
                     parts.append(" ")
             parts.append(item["text"])
-            prev_item = item
         line_text = "".join(parts).strip()
         if line_text:
             processed_lines.append((line_items[0].get("y", 0), line_text))
