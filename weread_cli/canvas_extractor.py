@@ -23,7 +23,7 @@ def reconstruct_text_from_canvas(captured: List[Dict]) -> str:
         return ""
 
     # ── 第一步：按时间排序 ──────────────────────────────
-    items = [item for item in captured if item.get("text") and item["text"].strip()]
+    items = [item for item in captured if item.get("text") and item["text"] != ""]
     items.sort(key=lambda i: i.get("timestamp", 0))
 
     # ── 第二步：坐标去重 ────────────────────────────────
@@ -90,33 +90,30 @@ def reconstruct_text_from_canvas(captured: List[Dict]) -> str:
                     item["text"] != cleaned[-1]["text"]):
                 cleaned.append(item)
 
-        # 拼接行内文本 — 动态统计字符间距，只在单词间大间隙处插入空格
-        # 先计算行内相邻字符的平均间距，以区分「词内间距」和「词间空格」
-        gaps = []
-        for i in range(1, len(cleaned)):
-            g = cleaned[i]["x"] - cleaned[i-1]["x"]
-            prev_t = cleaned[i-1]["text"]
-            # 只统计英文字符之间的间距
-            if prev_t.isascii() and prev_t.isalpha() and cleaned[i]["text"].isascii() and cleaned[i]["text"].isalpha():
-                gaps.append(g)
+        # 拼接行内文本 — 根据行内字符间距中位数判断词间空格
+        # Canvas 的 fillText 不会捕获空格字符，需要通过坐标间隙推断
+        # 先统计该行英文相邻字符间距的中位数
+        en_gaps = []
+        for j in range(1, len(cleaned)):
+            t1 = cleaned[j-1]["text"]
+            t2 = cleaned[j]["text"]
+            if t1.isascii() and t1.isalpha() and t2.isascii() and t2.isalpha():
+                en_gaps.append(cleaned[j]["x"] - cleaned[j-1]["x"])
 
-        # 用中位数作为词内基准间距
-        if gaps:
-            sorted_gaps = sorted(gaps)
+        median_gap = None
+        if en_gaps:
+            sorted_gaps = sorted(en_gaps)
             median_gap = sorted_gaps[len(sorted_gaps) // 2]
-            space_threshold = median_gap * 2.5  # 词间间隙通常显著大于词内间距
-        else:
-            space_threshold = None  # 无英文连续字符，不加空格
 
         parts = []
         for i, item in enumerate(cleaned):
-            if i > 0 and space_threshold is not None:
+            if i > 0 and median_gap is not None:
                 gap = item["x"] - cleaned[i-1]["x"]
                 prev_t = cleaned[i-1]["text"]
                 cur_t = item["text"]
-                # 只有当前后都是英文且间隙超过阈值时才插入空格
-                if prev_t.isascii() and prev_t.isalpha() and cur_t.isascii() and cur_t.isalpha() and gap > space_threshold:
-                    parts.append(" ")
+                if prev_t.isascii() and prev_t.isalpha() and cur_t.isascii() and cur_t.isalpha():
+                    if gap > median_gap * 3:
+                        parts.append(" ")
             parts.append(item["text"])
         line_text = "".join(parts).strip()
         if line_text:
