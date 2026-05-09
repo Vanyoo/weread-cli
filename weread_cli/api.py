@@ -14,9 +14,12 @@ import httpx
 from pathlib import Path
 from typing import Optional, List, Dict
 
+from rich.console import Console
+
 from .models import Book, Chapter, BookContent, UserInfo
 from .browser import CDPBrowserManager
-from .loading import LoadingSpinner
+
+console = Console()
 
 
 class WeReadAPI:
@@ -136,14 +139,12 @@ class WeReadAPI:
             return None
 
         try:
-            spinner = LoadingSpinner()
-            spinner.start()
-            resp = self.client.get(
-                f"{self.BASE_URL}/web/user",
-                params={"userVid": vid},
-                timeout=10
-            )
-            spinner.stop()
+            with console.status(""):
+                resp = self.client.get(
+                    f"{self.BASE_URL}/web/user",
+                    params={"userVid": vid},
+                    timeout=10
+                )
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("userVid"):
@@ -166,10 +167,8 @@ class WeReadAPI:
         """
         books = []
         try:
-            spinner = LoadingSpinner("获取书架中")
-            spinner.start()
-            resp = self.client.get(f"{self.BASE_URL}/web/shelf/sync")
-            spinner.stop()
+            with console.status("获取书架中"):
+                resp = self.client.get(f"{self.BASE_URL}/web/shelf/sync")
             if resp.status_code == 200:
                 data = resp.json()
                 book_progress = data.get("bookProgress", [])
@@ -235,13 +234,11 @@ class WeReadAPI:
         """
         chapters = []
         try:
-            spinner = LoadingSpinner("获取章节中")
-            spinner.start()
-            resp = self.client.post(
-                f"{self.BASE_URL}/web/book/chapterInfos",
-                json={"bookIds": [book_id]}
-            )
-            spinner.stop()
+            with console.status("获取章节中"):
+                resp = self.client.post(
+                    f"{self.BASE_URL}/web/book/chapterInfos",
+                    json={"bookIds": [book_id]},
+                )
             if resp.status_code == 200:
                 data = resp.json()
                 book_data = data.get("data", [{}])[0]
@@ -348,10 +345,8 @@ class WeReadAPI:
 
     def search_books(self, query: str) -> List[Book]:
         """搜索书架中的书籍"""
-        spinner = LoadingSpinner("搜索中")
-        spinner.start()
-        books = self.get_bookshelf()
-        spinner.stop()
+        with console.status("搜索中"):
+            books = self.get_bookshelf()
         query_lower = query.lower()
         return [
             book for book in books
@@ -370,20 +365,18 @@ class WeReadAPI:
             return False
 
         try:
-            spinner = LoadingSpinner("刷新 Cookie 中")
-            spinner.start()
-            resp = httpx.post(
-                f"{self.BASE_URL}/web/login/renewal",
-                cookies=self._cookies,
-                json={},
-                headers={
-                    "User-Agent": self.client.headers["User-Agent"],
-                    "Content-Type": "application/json",
-                },
-                follow_redirects=True,
-                timeout=10,
-            )
-            spinner.stop()
+            with console.status("刷新 Cookie 中"):
+                resp = httpx.post(
+                    f"{self.BASE_URL}/web/login/renewal",
+                    cookies=self._cookies,
+                    json={},
+                    headers={
+                        "User-Agent": self.client.headers["User-Agent"],
+                        "Content-Type": "application/json",
+                    },
+                    follow_redirects=True,
+                    timeout=10,
+                )
 
             # 检查响应
             try:
