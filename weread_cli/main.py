@@ -546,6 +546,7 @@ class WeReadCLI:
                 menu_items.append("  [cyan]b[/cyan] - 上一页")  # 始终显示，浏览器会处理边界
                 menu_items.append("  [cyan]r[/cyan] - 刷新页面")
                 menu_items.append("  [cyan]c[/cyan] - 章节列表")
+                menu_items.append("  [cyan]m[/cyan] - 切换翻页模式")
                 menu_items.append("  [cyan]q[/cyan] - 返回主菜单")
                 
                 # 两列排版
@@ -558,7 +559,7 @@ class WeReadCLI:
 
                 action = Prompt.ask(
                     "请选择",
-                    choices=["n", "p", "f", "b", "r", "c", "q"],
+                    choices=["n", "p", "f", "b", "r", "c", "m", "q"],
                     default="n"
                 )
 
@@ -657,6 +658,18 @@ class WeReadCLI:
                             )
                     except Exception as e:
                         console.print(f"[red]⚠️ 章节选择异常: {e}[/red]")
+                elif action == "m":
+                    console.print("[yellow]🔄 正在切换阅读模式...[/yellow]")
+                    try:
+                        new_mode = browser.toggle_reading_mode()
+                        if new_mode != "unknown":
+                            mode_label = "📜 滚动模式" if new_mode == "scroll" else "📄 翻页模式"
+                            console.print(f"[green]✅ 已切换到 {mode_label}[/green]")
+                            browser_navigated = True  # 重新提取内容
+                        else:
+                            console.print("[yellow]⚠️ 切换模式失败[/yellow]")
+                    except Exception as e:
+                        console.print(f"[red]⚠️ 切换模式异常: {e}[/red]")
                 elif action == "q":
                     break
 

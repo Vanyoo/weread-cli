@@ -575,24 +575,198 @@ class CDPBrowserManager:
             print(f"❌ 提取内容失败: {e}")
             return None
 
+    def _collect_all_scrolled_content(self) -> Optional[str]:
+        """滚动模式下的内容收集：自动滚动到底部，分段收集 Canvas 文本。
+
+        适用于长页面（非分页模式），Canvas 只渲染当前可视区域。
+        通过逐屏滚动 + 每屏收集 + 去重拼接，获取完整章节内容。
+        """
+        try:
+            # 检查是否处于滚动模式：没有"下一页"按钮
+            has_next_btn = self._page.evaluate("""() => {
+                const body = document.body.innerText;
+                return body.includes('下一页') || body.includes('下一章');
+            }""")
+            if has_next_btn:
+                return None  # 翻页模式，不用滚动
+
+            # 滚动模式：从顶部开始逐屏收集
+            self._page.evaluate("""() => {
+                window.__CANVAS_TEXT__ = [];
+                document.documentElement.scrollTop = 0;
+                document.body.scrollTop = 0;
+            }""")
+            self._page.wait_for_timeout(1500)
+
+            all_segments = []
+            max_scrolls = 50  # 最多 50 屏
+            prev_scroll_top = -1
+
+            for i in range(max_scrolls):
+                # 收集当前屏的 Canvas 文本
+                captured = self._page.evaluate("() => window.__CANVAS_TEXT__ || []")
+                if captured:
+                    from .canvas_extractor import reconstruct_text_from_canvas
+                    text = reconstruct_text_from_canvas(captured)
+                    if text and len(text.strip()) > 20:
+                        all_segments.append(text.strip())
+
+                # 获取当前滚动位置和最大可滚动距离
+                scroll_info = self._page.evaluate("""() => ({
+                    scrollTop: Math.max(document.documentElement.scrollTop, document.body.scrollTop),
+                    scrollHeight: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
+                    clientHeight: Math.max(document.documentElement.clientHeight, window.innerHeight)
+                })""")
+                scroll_top = scroll_info.get("scrollTop", 0)
+                scroll_height = scroll_info.get("scrollHeight", 0)
+                client_height = scroll_info.get("clientHeight", 0)
+
+                # 如果已经到底部，退出
+                if scroll_top + client_height >= scroll_height - 10:
+                    break
+                # 如果滚动没有变化（卡住了），也退出
+                if scroll_top == prev_scroll_top:
+                    break
+                prev_scroll_top = scroll_top
+
+                # 清掉旧 Canvas 文本，向下滚动一屏
+                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                self._page.evaluate(f"() => window.scrollBy(0, {client_height - 50})")
+                self._page.wait_for_timeout(1200)
+
+                # 等待新内容渲染
+                self._wait_for_canvas_text(timeout_ms=5000)
+
+            # 去重拼接：移除相邻 segment 的重叠部分
+            if not all_segments:
+                return None
+
+            result = all_segments[0]
+            for seg in all_segments[1:]:
+                # 找重叠：后一段的开头与前一段的结尾
+                overlap_found = False
+                overlap_len = min(200, len(result), len(seg))
+                for ol in range(overlap_len, 20, -1):
+                    if result[-ol:] == seg[:ol]:
+                        result += seg[ol:]
+                        overlap_found = True
+                        break
+                if not overlap_found:
+                    result += "\n\n" + seg
+
+            # 清理
+            result = re.sub(r'\n{3,}', '\n\n', result).strip()
+            return result if len(result) > 50 else None
+
+        except Exception as e:
+            print(f"⚠️ 滚动收集内容失败: {e}")
+            return None
+
+    def _collect_scrolled_content(self) -> Optional[str]:
+        """滚动模式：逐屏滚动收集 Canvas 文本，返回完整内容。
+
+        适用于没有"上一页/下一页"按钮的滚动模式（如邓小平时代）。
+        Canvas 只渲染当前可视区域，需要滚动触发下方内容渲染。
+        """
+        try:
+            # 检测是否为滚动模式（没有翻页按钮）
+            has_page_btn = self._page.evaluate("""() => {
+                const body = document.body.innerText;
+                return body.includes('下一页') || body.includes('上一章') || body.includes('下一章');
+            }""")
+            if has_page_btn:
+                return None  # 翻页模式，不走滚动收集
+
+            # 滚动到顶部并清空 Canvas
+            self._page.evaluate("""() => {
+                window.scrollTo(0, 0);
+                window.__CANVAS_TEXT__ = [];
+            }""")
+            self._page.wait_for_timeout(2000)
+
+            all_items = []
+            prev_scroll_top = -1
+            max_scrolls = 60
+
+            for i in range(max_scrolls):
+                # 获取当前视口信息
+                view_info = self._page.evaluate("""() => ({
+                    scrollTop: document.documentElement.scrollTop || document.body.scrollTop,
+                    scrollHeight: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
+                    clientHeight: window.innerHeight
+                })""")
+
+                scroll_top = view_info.get("scrollTop", 0)
+                scroll_height = view_info.get("scrollHeight", 0)
+                client_height = view_info.get("clientHeight", 800)
+
+                # 到达底部就停止
+                if scroll_top + client_height >= scroll_height - 20:
+                    break
+                if scroll_top == prev_scroll_top:
+                    break  # 滚不动了
+                prev_scroll_top = scroll_top
+
+                # 收集当前屏 Canvas 文本
+                captured = self._page.evaluate("() => window.__CANVAS_TEXT__ || []")
+                if captured:
+                    all_items.extend(captured)
+
+                # 向下滚动一屏（留 50px 重叠用于后续去重）
+                scroll_amount = client_height - 50
+                self._page.evaluate(f"() => window.scrollBy(0, {scroll_amount})")
+                self._page.wait_for_timeout(800)
+
+                # 等待 Canvas 渲染新内容
+                self._wait_for_canvas_text(timeout_ms=5000)
+                self._page.wait_for_timeout(500)
+
+            # 最后一次收集
+            captured = self._page.evaluate("() => window.__CANVAS_TEXT__ || []")
+            if captured:
+                all_items.extend(captured)
+
+            if not all_items:
+                return None
+
+            # 重建完整文本
+            from .canvas_extractor import reconstruct_text_from_canvas
+            text = reconstruct_text_from_canvas(all_items)
+
+            # 清理
+            nav_words = ['上一页', '下一页', '下一章', '上一章', '开始阅读', '阅读', '加入书架']
+            for word in nav_words:
+                text = text.replace(word, '')
+            text = re.sub(r'\n{3,}', '\n\n', text).strip()
+
+            return text if len(text) > 100 else None
+
+        except Exception as e:
+            print(f"⚠️ 滚动收集内容异常: {e}")
+            return None
+
     def get_content_with_title(self) -> Optional[Dict]:
-        """
-        提取内容 + 章节标题（通过 Canvas fillText 拦截）
-        """
+        """提取内容 + 章节标题（通过 Canvas fillText 拦截）"""
         if not self.is_alive:
             return None
 
         try:
-            # Extract text from Canvas fillText calls
-            captured = self._page.evaluate("() => window.__CANVAS_TEXT__ || []")
-            
-            if not captured:
-                return None
-            
-            # Reconstruct text from captured characters
-            from .canvas_extractor import reconstruct_text_from_canvas
-            text = reconstruct_text_from_canvas(captured)
-            
+            # 先尝试滚动模式收集（适用于长页面书籍如邓小平时代）
+            text = self._collect_scrolled_content()
+
+            # 如果不是滚动模式，则用原有方式提取
+            if not text:
+                captured = self._page.evaluate("() => window.__CANVAS_TEXT__ || []")
+                if not captured:
+                    return None
+                from .canvas_extractor import reconstruct_text_from_canvas
+                text = reconstruct_text_from_canvas(captured)
+                if not text or len(text) < 50:
+                    return None
+                nav_words = ['上一页', '下一页', '下一章', '上一章', '开始阅读', '阅读', '加入书架']
+                for word in nav_words:
+                    text = text.replace(word, '')
+                text = re.sub(r'\n{3,}', '\n\n', text).strip()
             if not text or len(text) < 50:
                 return None
             
@@ -976,6 +1150,55 @@ class CDPBrowserManager:
 
         except Exception:
             return True
+
+    def toggle_reading_mode(self) -> str:
+        """切换阅读模式（翻页 / 滚动）。
+
+        微信读书 Web 阅读器在设置面板（Aa 按钮）中可以切换翻页/滚动模式。
+        模式配置存储在 localStorage 的 readerConfig 中。
+
+        Returns:
+            切换后的模式: "pagination" 或 "scroll"
+        """
+        if not self.is_alive:
+            return "unknown"
+
+        try:
+            # 读取当前 readerConfig
+            config = self._page.evaluate("""() => {
+                try {
+                    const raw = localStorage.getItem('readerConfig');
+                    return raw ? JSON.parse(raw) : null;
+                } catch(e) { return null; }
+            }""")
+
+            # 切换 mode: 1 = 翻页模式, 2 = 滚动模式（微信读书内部值）
+            if config and 'mode' in config:
+                new_mode = 2 if config['mode'] == 1 else 1
+                config['mode'] = new_mode
+            else:
+                config = {'mode': 1}
+                new_mode = 1
+
+            self._page.evaluate(f"""(cfg) => {{
+                localStorage.setItem('readerConfig', JSON.stringify(cfg));
+            }}""", config)
+
+            # 刷新页面使配置生效
+            self._page.evaluate("() => window.location.reload()")
+            self._page.wait_for_timeout(3000)
+
+            # 重新注入 Canvas 钩子
+            self._inject_canvas_hook()
+
+            # 等待内容渲染
+            self._wait_for_canvas_text(timeout_ms=8000)
+
+            return "scroll" if new_mode == 2 else "pagination"
+
+        except Exception as e:
+            print(f"⚠️ 切换阅读模式失败: {e}")
+            return "unknown"
 
     def refresh_current_page(self) -> bool:
         """刷新当前页面并重新注入 Canvas 钩子。
