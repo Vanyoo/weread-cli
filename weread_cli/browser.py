@@ -935,7 +935,28 @@ class CDPBrowserManager:
                 parts.append(left_text.strip())
             if right_text and len(right_text.strip()) > 5:
                 parts.append(right_text.strip())
-            result = '\n\n'.join(parts)
+
+            # 智能连接左右栏：检查左栏结尾是否有结束标点
+            if len(parts) == 2:
+                left_stripped = parts[0]
+                # 查找左栏最后一个非空白字符
+                last_char = ''
+                for ch in reversed(left_stripped):
+                    if ch not in ' \t\n\r':
+                        last_char = ch
+                        break
+
+                # 结束标点：句号、问号、叹号、分号、冒号、右引号/括号等
+                ending_punct = set('。！？；，、：""\'\'」』）》）】}〉』')
+                # 空格也算结束信号（英文换行）
+                if last_char in ending_punct or last_char.isspace() or not last_char:
+                    # 有结束标记 → 换行
+                    result = '\n\n'.join(parts)
+                else:
+                    # 无结束标记 → 直接拼接，保持文字连贯
+                    result = parts[0] + parts[1]
+            else:
+                result = '\n\n'.join(parts)
 
         if debug:
             debug_info.append(f"[双栏诊断] 最终文本长度: {len(result)} 字符")
