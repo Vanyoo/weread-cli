@@ -250,7 +250,8 @@ class WeReadAPI:
                         title=ch.get("title", f"Chapter {idx+1}"),
                         index=idx,
                         is_vip=ch.get("price", 0) > 0,
-                        chapter_idx=ch.get("chapterIdx", idx)
+                        chapter_idx=ch.get("chapterIdx", idx),
+                        word_count=ch.get("wordCount", 0)
                     ))
         except Exception as e:
             print(f"❌ 获取章节失败：{e}")

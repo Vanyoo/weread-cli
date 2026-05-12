@@ -30,10 +30,18 @@ class Chapter:
     index: int = 0
     is_vip: bool = False
     chapter_idx: int = 0  # API 返回的 chapterIdx，用于生成 URL chapter_hash
-    
+    word_count: int = 0  # 章节字数（来自 API），用于估算总页数
+
     def __str__(self):
         vip_mark = "👑 " if self.is_vip else ""
         return f"{vip_mark}{self.title}"
+
+    @property
+    def estimated_pages(self) -> int:
+        """估算双栏模式下的总页数（每页约 500-600 字）"""
+        if self.word_count <= 0:
+            return 1
+        return max(1, (self.word_count + 500) // 500)
 
 
 @dataclass

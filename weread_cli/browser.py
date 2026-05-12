@@ -70,6 +70,28 @@ def weread_hash(data) -> str:
     return result
 
 
+def _reverse_weread_hash_int(hash_str: str) -> Optional[str]:
+    """
+    反向解码 weread_hash 编码的整数。
+    URL 中的 chapter_hash 格式: xxx32yy02<hex>...
+    提取 hex 部分转回十进制字符串。
+    """
+    # 查找 "32" 后的十六进制部分
+    # 格式: ...32yy LLLL hexdata ...
+    # 其中 yy 是 md5 最后两位，LLLL 是长度（2位十六进制），hexdata 是实际的十六进制数据
+    match = re.search(r'32[0-9a-f]{2}([0-9a-f]{2})([0-9a-f]+)', hash_str)
+    if match:
+        length_hex = match.group(1)
+        hex_data = match.group(2)
+        expected_len = int(length_hex, 16)
+        hex_value = hex_data[:expected_len]
+        try:
+            return str(int(hex_value, 16))
+        except ValueError:
+            pass
+    return None
+
+
 @dataclass
 class ReaderState:
     """阅读器当前状态"""
@@ -216,21 +238,40 @@ class CDPBrowserManager:
             
             # 注入 Canvas 文本拦截脚本
             # 微信读书使用 Canvas 渲染正文，通过拦截 fillText 可以提取文本
+            # 关键：捕获 canvas 元素的屏幕偏移量，用于区分左右页
             self._page.add_init_script("""
                 window.__CANVAS_TEXT__ = [];
-                const origFillText = CanvasRenderingContext2D.prototype.fillText;
-                CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-                    if (text && typeof text === 'string' && text.length > 0) {
-                        window.__CANVAS_TEXT__.push({
-                            text: text,
-                            x: x,
-                            y: y,
-                            maxWidth: maxWidth,
-                            timestamp: Date.now()
-                        });
-                    }
-                    return origFillText.call(this, text, x, y, maxWidth);
-                };
+                if (!window.__CANVAS_TEXT_HOOKED__) {
+                    window.__CANVAS_TEXT_HOOKED__ = true;
+                    const origFillText = CanvasRenderingContext2D.prototype.fillText;
+                    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
+                        if (text && typeof text === 'string' && text.length > 0) {
+                            try {
+                                var rect = this.canvas.getBoundingClientRect();
+                                window.__CANVAS_TEXT__.push({
+                                    text: text,
+                                    x: x,
+                                    y: y + rect.top,
+                                    canvasOffsetX: Math.round(rect.left),
+                                    canvasOffsetY: Math.round(rect.top),
+                                    canvasWidth: Math.round(rect.width),
+                                    timestamp: Date.now()
+                                });
+                            } catch(e) {
+                                window.__CANVAS_TEXT__.push({
+                                    text: text,
+                                    x: x,
+                                    y: y,
+                                    canvasOffsetX: 0,
+                                    canvasOffsetY: 0,
+                                    canvasWidth: 0,
+                                    timestamp: Date.now()
+                                });
+                            }
+                        }
+                        return origFillText.call(this, text, x, y, maxWidth);
+                    };
+                }
             """)
 
             return True
@@ -276,6 +317,23 @@ class CDPBrowserManager:
 
     # ── 导航 ─────────────────────────────────────────────────
 
+    def _detect_chapter_index_from_url(self, url: str) -> Optional[int]:
+        """
+        从 WeRead 阅读器 URL 中解析当前章节索引。
+        
+        URL 格式: https://weread.qq.com/web/reader/{book_hash}k{chapter_hash}
+        chapter_hash 是 weread_hash(chapter_idx) 编码的整数。
+        通过反向解码得到 chapter_idx。
+        """
+        match = re.search(r'/web/reader/[0-9a-f]+k([0-9a-f]+)', url)
+        if not match:
+            return None
+        chapter_hash = match.group(1)
+        chapter_idx_str = _reverse_weread_hash_int(chapter_hash)
+        if chapter_idx_str:
+            return int(chapter_idx_str)
+        return None
+
     def navigate_to_book(self, book_id: str) -> bool:
         """
         导航到一本书。打开阅读器首页（封面页）。
@@ -295,13 +353,28 @@ class CDPBrowserManager:
                     const origFillText = CanvasRenderingContext2D.prototype.fillText;
                     CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
                         if (text && typeof text === 'string' && text.length > 0) {
-                            window.__CANVAS_TEXT__.push({
-                                text: text,
-                                x: x,
-                                y: y,
-                                maxWidth: maxWidth,
-                                timestamp: Date.now()
-                            });
+                            try {
+                                var rect = this.canvas.getBoundingClientRect();
+                                window.__CANVAS_TEXT__.push({
+                                    text: text,
+                                    x: x,
+                                    y: y + rect.top,
+                                    canvasOffsetX: Math.round(rect.left),
+                                    canvasOffsetY: Math.round(rect.top),
+                                    canvasWidth: Math.round(rect.width),
+                                    timestamp: Date.now()
+                                });
+                            } catch(e) {
+                                window.__CANVAS_TEXT__.push({
+                                    text: text,
+                                    x: x,
+                                    y: y,
+                                    canvasOffsetX: 0,
+                                    canvasOffsetY: 0,
+                                    canvasWidth: 0,
+                                    timestamp: Date.now()
+                                });
+                            }
                         }
                         return origFillText.call(this, text, x, y, maxWidth);
                     };
@@ -405,13 +478,14 @@ class CDPBrowserManager:
             hash_input = chapter_idx if chapter_idx > 0 else chapter_uid
             chapter_hash = weread_hash(hash_input)
             target_path = f"/web/reader/{book_hash}k{chapter_hash}"
-            
+
             # 通过 JS 修改 location 触发 SPA 路由，而非 page.goto()（会导致页面重载 + Canvas hook 丢失）
             self._page.evaluate(f"() => window.location.href = '{target_path}'")
-            
+
             # 等待 SPA 路由完成 + Canvas 渲染
-            self._wait_for_canvas_text(timeout_ms=10000)
-            self._page.wait_for_timeout(1500)
+            # 首次章节切换给更多时间
+            self._wait_for_canvas_text(timeout_ms=15000)
+            self._page.wait_for_timeout(2000)
 
             extracted_title = self._extract_chapter_title_from_canvas()
             self.state.chapter_uid = chapter_uid
@@ -745,52 +819,186 @@ class CDPBrowserManager:
             print(f"⚠️ 滚动收集内容异常: {e}")
             return None
 
+    def _reconstruct_page_text(self, captured: list) -> str:
+        """重建单页文本，使用 canvas_extractor 模块。"""
+        if not captured:
+            return ""
+        from .canvas_extractor import reconstruct_text_from_canvas
+        return reconstruct_text_from_canvas(captured)
+
+    def _reconstruct_dual_column_spread(self, captured: list, debug: bool = False) -> str:
+        """重建一个 spread（左右双栏）的文本。
+
+        双栏模式下 WeRead 使用单个 Canvas 按阅读顺序渲染：
+        先渲染左栏（从上到下），再渲染右栏（从上到下）。
+        左右栏共享相同的 x 坐标范围（各自相对于栏的起始位置）。
+        策略：按 timestamp 排序后，检测 y 重置点将内容分为左右两栏。
+
+        注意：WeRead 初始加载时会预渲染多个 spread（页）。
+        本函数只提取第一个 spread，忽略预渲染的后续内容。
+        """
+        if not captured:
+            return ""
+
+        # 按 timestamp 排序
+        items = [item for item in captured
+                 if item.get("text") and item["text"] != ""
+                 and isinstance(item.get("x"), (int, float))]
+        items.sort(key=lambda i: i.get("timestamp", 0))
+        if not items:
+            return ""
+
+        # 检测左右栏分界点：在 timestamp 顺序中，左栏的 y 值递增，
+        # 到达左栏末尾后 y 值突然变小（右栏从顶部开始）
+        ys = [item.get("y", 0) for item in items]
+
+        # 检测所有 y 突变点（每个突变点 = 新栏开始）
+        drops = []
+        window = 5
+        for i in range(10, len(items) - 10):
+            y_before = sum(ys[i - window:i]) / window
+            y_now = ys[i]
+            drop = y_before - y_now
+            if drop > 50:  # 显著下降（约等于行高）
+                drops.append((i, drop))
+
+        if not drops:
+            # 没有突降，直接单栏重建
+            return self._reconstruct_page_text(items)
+
+        # 第一个显著突降 = 左栏结束 → 右栏开始
+        first_drop_idx = drops[0][0]
+        best_drop = drops[0][1]
+
+        # 但如果第一个突降太早（<20%），可能是标题区，用更大的突降
+        if first_drop_idx < len(items) * 0.2 and len(drops) > 1:
+            # 在前 3 个突降中选最大的
+            candidate_drops = drops[:min(3, len(drops))]
+            best_drop_idx = max(candidate_drops, key=lambda d: d[1])[0]
+            best_split = best_drop_idx
+        else:
+            best_split = first_drop_idx
+
+        # 检测是否预渲染了多页：在第一个突降之后还有突降
+        # 找到第二个突降（第二页开始的位置），截断多余内容
+        second_spread_start = None
+        for idx, drop in drops[1:]:
+            if idx > best_split and idx - best_split > 20:
+                second_spread_start = idx
+                break
+        if second_spread_start:
+            items = items[:second_spread_start]
+            ys = ys[:second_spread_start]
+            print(f"[多页检测] 截断预渲染内容: {len(items)} 字符")
+
+        left_items = items[:best_split]
+        right_items = items[best_split:]
+
+        # 调试输出（总是打印）
+        if len(left_items) > 0 and len(right_items) > 0:
+            left_y_min = min(i.get('y', 0) for i in left_items)
+            left_y_max = max(i.get('y', 0) for i in left_items)
+            right_y_min = min(i.get('y', 0) for i in right_items)
+            right_y_max = max(i.get('y', 0) for i in right_items)
+            print(f"[双栏分割] 分界点={best_split}/{len(items)}, y突变={best_drop:.0f}")
+            print(f"[双栏分割] 左栏 y: {left_y_min:.0f}~{left_y_max:.0f} ({len(left_items)}字符)")
+            print(f"[双栏分割] 右栏 y: {right_y_min:.0f}~{right_y_max:.0f} ({len(right_items)}字符)")
+
+        debug_info = []
+        if debug:
+            debug_info.append(f"{'='*50}")
+            debug_info.append(f"[双栏诊断] 总字符: {len(items)}, 分界点: {best_split}/{len(items)}")
+            debug_info.append(f"[双栏诊断] 左栏: {len(left_items)} 字符, 右栏: {len(right_items)} 字符")
+            if left_items and right_items:
+                debug_info.append(f"[双栏诊断] 左栏 y: {left_y_min:.0f}~{left_y_max:.0f}, 右栏 y: {right_y_min:.0f}~{right_y_max:.0f}")
+                debug_info.append(f"[双栏诊断] y 突变值: {best_drop:.0f}")
+                # 打印分界点附近的 y 值
+                debug_info.append(f"[双栏诊断] 分界点附近 y 值:")
+                for j in range(max(0, best_split - 5), min(len(items), best_split + 5)):
+                    marker = " ← 分界" if j == best_split else ""
+                    debug_info.append(f"  [{j}] y={ys[j]:.0f}, text={items[j]['text'][:3]}{marker}")
+            # 打印前 5 和后 5 个字符
+            debug_info.append(f"[双栏诊断] 前5个: {[items[j]['text'][:5] for j in range(min(5, len(items)))]}")
+            debug_info.append(f"[双栏诊断] 后5个: {[items[j]['text'][:5] for j in range(len(items)-5, len(items))]}")
+
+        # 如果分割严重不均，可能不是双栏
+        if len(left_items) < 5 or len(right_items) < 5:
+            if debug:
+                debug_info.append("[双栏诊断] 分割不均，单栏重建")
+            result = self._reconstruct_page_text(items)
+        else:
+            left_text = self._reconstruct_page_text(left_items)
+            right_text = self._reconstruct_page_text(right_items)
+
+            parts = []
+            if left_text and len(left_text.strip()) > 5:
+                parts.append(left_text.strip())
+            if right_text and len(right_text.strip()) > 5:
+                parts.append(right_text.strip())
+            result = '\n\n'.join(parts)
+
+        if debug:
+            debug_info.append(f"[双栏诊断] 最终文本长度: {len(result)} 字符")
+            preview = result[:200].replace('\n', '\\n') + ('...' if len(result) > 200 else '')
+            debug_info.append(f"[双栏诊断] 内容预览: {preview}")
+            debug_info.append(f"{'='*50}")
+            return '\n'.join(debug_info)
+
+        return result
+
     def get_content_with_title(self) -> Optional[Dict]:
         """提取内容 + 章节标题（通过 Canvas fillText 拦截）"""
         if not self.is_alive:
             return None
 
         try:
-            # 先尝试滚动模式收集（适用于长页面书籍如邓小平时代）
-            text = self._collect_scrolled_content()
+            captured = self._page.evaluate("() => window.__CANVAS_TEXT__ || []")
 
-            # 如果不是滚动模式，则用原有方式提取
-            if not text:
-                captured = self._page.evaluate("() => window.__CANVAS_TEXT__ || []")
-                if not captured:
-                    return None
+            if not captured:
+                return None
+
+            # 检测是否为双栏翻页模式
+            is_dual_column = self._find_text('下一页') is not None
+
+            if is_dual_column:
+                # 双栏：分离左右栏后重建，避免左右文字交错
+                text = self._reconstruct_dual_column_spread(captured)
+                # 调试输出
+                if text and len(text) > 100:
+                    preview = text[:80].replace('\n', ' ')
+                    print(f"[内容提取] 双栏模式, 重建长度={len(text)}, 预览: {preview}")
+            else:
+                # 滚动/单栏：直接重建
                 from .canvas_extractor import reconstruct_text_from_canvas
                 text = reconstruct_text_from_canvas(captured)
-                if not text or len(text) < 50:
-                    return None
-                nav_words = ['上一页', '下一页', '下一章', '上一章', '开始阅读', '阅读', '加入书架']
-                for word in nav_words:
-                    text = text.replace(word, '')
-                text = re.sub(r'\n{3,}', '\n\n', text).strip()
+                if text and len(text) > 100:
+                    preview = text[:80].replace('\n', ' ')
+                    print(f"[内容提取] 单栏模式, 重建长度={len(text)}, 预览: {preview}")
+
             if not text or len(text) < 50:
                 return None
-            
+
             # 过滤掉 Canvas 中的导航按钮文字
             nav_words = ['上一页', '下一页', '下一章', '上一章', '开始阅读', '阅读', '加入书架']
             for word in nav_words:
                 text = text.replace(word, '')
-            
+
             # 清理多余空行
             text = re.sub(r'\n{3,}', '\n\n', text).strip()
-            
+
             if len(text) < 50:
                 return None
-            
+
             # Try to extract chapter title from the first line
             lines = text.split('\n\n')
             title = lines[0] if lines else ""
             content = '\n\n'.join(lines[1:]) if len(lines) > 1 else text
-            
+
             # If title is too long, it's probably part of the content
             if len(title) > 50:
                 content = text
                 title = ""
-            
+
             return {
                 "title": title,
                 "content": content,
@@ -810,13 +1018,28 @@ class CDPBrowserManager:
                 const origFillText = CanvasRenderingContext2D.prototype.fillText;
                 CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
                     if (text && typeof text === 'string' && text.length > 0) {
-                        window.__CANVAS_TEXT__.push({
-                            text: text,
-                            x: x,
-                            y: y,
-                            maxWidth: maxWidth,
-                            timestamp: Date.now()
-                        });
+                        try {
+                            var rect = this.canvas.getBoundingClientRect();
+                            window.__CANVAS_TEXT__.push({
+                                text: text,
+                                x: x,
+                                y: y + rect.top,
+                                canvasOffsetX: Math.round(rect.left),
+                                canvasOffsetY: Math.round(rect.top),
+                                canvasWidth: Math.round(rect.width),
+                                timestamp: Date.now()
+                            });
+                        } catch(e) {
+                            window.__CANVAS_TEXT__.push({
+                                text: text,
+                                x: x,
+                                y: y,
+                                canvasOffsetX: 0,
+                                canvasOffsetY: 0,
+                                canvasWidth: 0,
+                                timestamp: Date.now()
+                            });
+                        }
                     }
                     return origFillText.call(this, text, x, y, maxWidth);
                 };
@@ -908,7 +1131,6 @@ class CDPBrowserManager:
             self._wait_for_canvas_text()
             return True
         except Exception as e:
-            # 页面可能在点击后发生了变化，不抛异常
             return False
 
     def prev_page(self) -> bool:
@@ -933,14 +1155,17 @@ class CDPBrowserManager:
         """等待 Canvas 有新文本渲染。
         
         Canvas 渲染是异步的，需要等待 fillText 调用完成。
+        采用渐进式等待策略：首次等待时间长，后续轮询间隔递增。
         """
         try:
             start = time.time()
+            # 首次渲染可能需要更长时间，先给一个初始等待
+            self._page.wait_for_timeout(500)
             while (time.time() - start) * 1000 < timeout_ms:
                 count = self._page.evaluate("() => (window.__CANVAS_TEXT__ || []).length")
                 if count > 10:  # 至少有一些文本了
                     return True
-                self._page.wait_for_timeout(200)
+                self._page.wait_for_timeout(300)
             return False
         except Exception:
             # 页面可能正在导航或已变化
@@ -1152,52 +1377,94 @@ class CDPBrowserManager:
             return True
 
     def toggle_reading_mode(self) -> str:
-        """切换阅读模式（翻页 / 滚动）。
+        """切换阅读模式（双栏翻页 / 滚动）。
 
-        微信读书 Web 阅读器在设置面板（Aa 按钮）中可以切换翻页/滚动模式。
-        模式配置存储在 localStorage 的 readerConfig 中。
-
-        Returns:
-            切换后的模式: "pagination" 或 "scroll"
+        策略：修改 localStorage.readerConfig.mode + 强制刷新。
+        刷新后通过 SPA 路由恢复页面。
         """
         if not self.is_alive:
             return "unknown"
 
         try:
-            # 读取当前 readerConfig
+            # 读取当前配置
+            pre_config = self._page.evaluate("""() => {
+                try { return JSON.parse(localStorage.getItem('readerConfig')); }
+                catch(e) { return null; }
+            }""")
+            print(f"[切换前] readerConfig: {pre_config}")
+
+            # 切换 mode: 1 = 双栏翻页, 2 = 滚动
+            current = self._page.evaluate("""() => {
+                try {
+                    const raw = localStorage.getItem('readerConfig');
+                    if (raw) return JSON.parse(raw);
+                } catch(e) {}
+                return { mode: 1 };
+            }""")
+            if current is None:
+                current = {'mode': 1}
+            new_mode = 2 if current.get('mode') == 1 else 1
+            current['mode'] = new_mode
+
+            # 写入配置
+            self._page.evaluate("""(cfg) => {
+                localStorage.setItem('readerConfig', JSON.stringify(cfg));
+            }""", current)
+            print(f"[localStorage] 设置 mode={new_mode}")
+
+            # 保存当前 URL 以便恢复
+            current_url = self._page.url
+
+            # 使用 page.reload() 而非 evaluate("window.location.reload()")
+            # page.reload() 由 Playwright 控制，更可靠
+            self._page.reload(timeout=15000)
+            self._page.wait_for_timeout(3000)
+
+            # 重新注入 Canvas 钩子（reload 后丢失）
+            self._inject_canvas_hook()
+
+            # 如果 reload 后不在阅读器页面，重新导航
+            if 'reader' not in self._page.url:
+                if self.state.book_id and self.state.chapter_uid:
+                    print(f"[恢复导航] 返回章节 {self.state.chapter_uid}")
+                    self.go_to_chapter(
+                        self.state.chapter_uid,
+                        chapter_title=self.state.chapter_title,
+                        chapter_index=self.state.chapter_index,
+                        chapter_idx=self.state.chapter_index
+                    )
+                    self._page.wait_for_timeout(2000)
+
+            self._wait_for_canvas_text(timeout_ms=15000)
+
+            return self.get_current_reading_mode()
+
+        except Exception as e:
+            print(f"⚠️ 切换阅读模式失败: {e}")
+            return "unknown"
+
+    def get_current_reading_mode(self) -> str:
+        """获取当前阅读模式，不切换。
+
+        Returns:
+            "dual_column" / "scroll" / "unknown"
+        """
+        if not self.is_alive:
+            return "unknown"
+        try:
+            has_next = self._find_text('下一页') is not None
+            if has_next:
+                return "dual_column"
             config = self._page.evaluate("""() => {
                 try {
                     const raw = localStorage.getItem('readerConfig');
                     return raw ? JSON.parse(raw) : null;
                 } catch(e) { return null; }
             }""")
-
-            # 切换 mode: 1 = 翻页模式, 2 = 滚动模式（微信读书内部值）
-            if config and 'mode' in config:
-                new_mode = 2 if config['mode'] == 1 else 1
-                config['mode'] = new_mode
-            else:
-                config = {'mode': 1}
-                new_mode = 1
-
-            self._page.evaluate(f"""(cfg) => {{
-                localStorage.setItem('readerConfig', JSON.stringify(cfg));
-            }}""", config)
-
-            # 刷新页面使配置生效
-            self._page.evaluate("() => window.location.reload()")
-            self._page.wait_for_timeout(3000)
-
-            # 重新注入 Canvas 钩子
-            self._inject_canvas_hook()
-
-            # 等待内容渲染
-            self._wait_for_canvas_text(timeout_ms=8000)
-
-            return "scroll" if new_mode == 2 else "pagination"
-
-        except Exception as e:
-            print(f"⚠️ 切换阅读模式失败: {e}")
+            if config and config.get('mode') == 2:
+                return "scroll"
+            return "dual_column"
+        except Exception:
             return "unknown"
 
     def refresh_current_page(self) -> bool:

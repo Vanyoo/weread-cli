@@ -300,8 +300,12 @@ class WeReadCLI:
         self._load_book_for_reading(books[choice - 1])
         return True
 
-    def show_chapters(self):
-        """显示章节列表"""
+    def show_chapters(self, highlight_index: int = -1):
+        """显示章节列表
+
+        Args:
+            highlight_index: 当前章节索引（0-based），-1 表示不高亮
+        """
         if not self.current_book:
             console.print("[yellow]请先选择书籍[/yellow]\n")
             return
@@ -310,21 +314,48 @@ class WeReadCLI:
             console.print("[yellow]暂无章节[/yellow]\n")
             return
 
+        total = len(self.current_chapters)
+
+        # 如果章节很多，只显示当前章节附近的
+        if total > 30 and highlight_index >= 0:
+            # 显示当前章节前后的章节
+            start = max(0, highlight_index - 10)
+            end = min(total, highlight_index + 11)
+            display_range = list(range(start, end))
+
+            console.print(f"[dim]共 {total} 章，显示第 {start+1}-{end} 章（当前章节附近）[/dim]\n")
+        else:
+            display_range = list(range(total))
+
         table = Table(
-            title=f"📖 {self.current_book.title} - 章节列表",
+            title=f"📖 {self.current_book.title} - 目录",
             show_lines=True
         )
         table.add_column("序号", style="cyan", justify="center", width=6)
         table.add_column("章节标题", style="green")
-        table.add_column("VIP", justify="center", width=5)
+        table.add_column("状态", justify="center", width=6)
 
-        for idx, chapter in enumerate(self.current_chapters, 1):
-            vip_mark = "👑" if chapter.is_vip else ""
-            table.add_row(
-                str(idx),
-                chapter.title[:50] + "..." if len(chapter.title) > 50 else chapter.title,
-                vip_mark
-            )
+        for idx in display_range:
+            chapter = self.current_chapters[idx]
+            num = idx + 1
+
+            if idx == highlight_index:
+                # 当前章节：高亮显示
+                title_style = "[bold yellow]"
+                vip_mark = "👑" if chapter.is_vip else ""
+                status = f"{vip_mark} [bold yellow]◀ 当前[/bold yellow]"
+                table.add_row(
+                    f"[bold yellow]{num}[/bold yellow]",
+                    f"{title_style}{chapter.title[:50]}[/]",
+                    status
+                )
+            else:
+                vip_mark = "👑" if chapter.is_vip else ""
+                table.add_row(
+                    str(num),
+                    chapter.title[:50] + "..." if len(chapter.title) > 50 else chapter.title,
+                    vip_mark
+                )
 
         console.print(table)
         console.print()
@@ -340,7 +371,7 @@ class WeReadCLI:
         self._enter_reading_mode()
 
     def _enter_reading_mode(self):
-        """进入阅读模式（启动浏览器、打开书、进入阅读循环）"""
+        """进入阅读模式（启动浏览器、打开书、跳转到当前章节、进入阅读循环）"""
         if not self.current_book:
             console.print("[yellow]⚠️  未选择书籍[/yellow]\n")
             return
@@ -364,16 +395,56 @@ class WeReadCLI:
             console.print("[red]❌ 无法启动浏览器，请检查登录状态[/red]")
             return
 
-        # 导航到书籍
+        # 导航到书籍（不跳转章节，让 WeRead 自动恢复上次阅读进度）
         console.print(f"[yellow]📖 正在打开《{self.current_book.title}》...[/yellow]")
         browser = self.api._browser
         if not browser.navigate_to_book(self.current_book.book_id):
             console.print("[red]❌ 无法打开书籍[/red]")
             return
 
-        # 等待阅读器加载，Canvas 钩子已在 start() 和 navigate_to_book() 中注入
-        browser._page.wait_for_timeout(2000)
+        # 等待 WeRead SPA 完成自动恢复进度（轮询 URL 直到出现章节 hash）
+        # WeRead 初始打开 book_url 后，会从服务器获取进度并 SPA 导航到目标章节
+        console.print("[dim]⏳ 等待 WeRead 恢复阅读进度...[/dim]")
+        import time
+        start = time.time()
+        detected_chapter_idx = None
+        while time.time() - start < 10:
+            current_url = browser._page.url
+            detected_chapter_idx = browser._detect_chapter_index_from_url(current_url)
+            if detected_chapter_idx is not None:
+                break
+            browser._page.wait_for_timeout(500)
+
+        if detected_chapter_idx is not None and 0 <= detected_chapter_idx < len(self.current_chapters):
+            if detected_chapter_idx != self.current_chapter_index:
+                console.print(f"[yellow]📄 同步章节: CLI={self.current_chapter_index + 1} → WeRead={detected_chapter_idx + 1} ({self.current_chapters[detected_chapter_idx].title})[/yellow]")
+            self.current_chapter_index = detected_chapter_idx
+        else:
+            console.print(f"[yellow]📄 使用 CLI 记录的章节: 第 {self.current_chapter_index + 1} 章[/yellow]")
+
+        # 关键修复：WeRead 自动恢复过程中 Canvas 累积了多页文本
+        # 方案：翻到下一页 → 清空 Canvas → 翻回当前页 → 只捕获当前页渲染
+        console.print("[dim]🔄 刷新 Canvas 内容...[/dim]")
         
+        next_btn = browser._find_text('下一页')
+        if next_btn:
+            next_btn.click(force=True)
+            browser._page.wait_for_timeout(800)
+            # 清空下一页的文本
+            browser._page.evaluate("() => { if (window.__CANVAS_TEXT__) window.__CANVAS_TEXT__ = []; }")
+            # 翻回当前页
+            prev_btn = browser._find_text('上一页')
+            if prev_btn:
+                prev_btn.click(force=True)
+                browser._page.wait_for_timeout(800)
+            else:
+                # 翻到下一页后没有"上一页"，说明整本书只有1页
+                # 无法用翻页刷新，依赖多页截断逻辑（应该只有1页所以没问题）
+                console.print("[dim]📄 仅1页，跳过刷新[/dim]")
+        else:
+            # 没有下一页按钮，说明在章节末尾，使用多页截断逻辑
+            console.print("[dim]📄 无下一页，依赖多页截断[/dim]")
+
         # 进入阅读模式前保存一次 Cookie
         browser.save_session_cookies(self.login_manager.cookie_file)
         
@@ -403,8 +474,8 @@ class WeReadCLI:
 
                 # 获取内容
                 if first_open:
-                    # 首次打开：_enter_reading_mode() 已通过 navigate_to_book() 打开书籍页面，
-                    # 直接从浏览器当前页面提取内容（Canvas 钩子），跳过 API 章节加载
+                    # 首次打开：_enter_reading_mode() 已导航到目标章节，
+                    # 直接从浏览器当前页面提取内容
                     raw = browser.get_content_with_title()
                     browser_navigated = True  # 后续同一章内的翻页也从浏览器提取
                     first_open = False
@@ -420,6 +491,16 @@ class WeReadCLI:
                     )
                 else:
                     raw = browser.get_content_with_title()
+
+                # 打印提取的章节标题和内容首句用于调试
+                if raw:
+                    if isinstance(raw, dict):
+                        debug_title = raw.get("title", "")
+                        debug_text = raw.get("content", "")[:50]
+                    else:
+                        debug_title = raw.title if raw.title else ""
+                        debug_text = raw.content[:50]
+                    console.print(f"[dim][调试] 提取标题={debug_title or '无'}, 首句={debug_text}...[/dim]")
 
                 # 统一归一化 content：支持 BookContent 对象和 dict
                 if raw:
@@ -439,6 +520,16 @@ class WeReadCLI:
                         chapter.title if chapter else "未知章节"
                     )
 
+                    # 自动检测章节变化：通过提取的标题匹配章节列表
+                    if content_title and len(content_title) < 80:
+                        for idx, ch in enumerate(self.current_chapters):
+                            if ch.title == content_title or content_title in ch.title or ch.title in content_title:
+                                if idx != self.current_chapter_index:
+                                    console.print(f"[dim]📄 自动同步章节: {self.current_chapter_index + 1} → {idx + 1} ({content_title})[/dim]")
+                                    self.current_chapter_index = idx
+                                    chapter = ch
+                                break
+
                     # 构建章节信息字符串
                     total_chaps = len(self.current_chapters)
                     current_chap_num = self.current_chapter_index + 1
@@ -453,10 +544,8 @@ class WeReadCLI:
                         border_style="green"
                     ))
 
-                    # 分页显示内容（带章节信息 + 章跳转）
+                    # 显示内容（无页码，回归4月模式）
                     result = self._display_content(content_text, chapter_info, has_prev, has_next)
-
-                    # 处理阅读中的章节跳转 / 刷新
                     if result == "quit":
                         break
                     elif result == "prev_chapter":
@@ -469,6 +558,28 @@ class WeReadCLI:
                             self.current_chapter_index += 1
                             browser_navigated = False
                             continue
+                    elif result == "next_page":
+                        # 浏览器翻到下一页
+                        try:
+                            success = browser.next_page()
+                            if success:
+                                browser_navigated = True  # 下一轮重新提取
+                            else:
+                                console.print("[yellow]⚠️ 没有下一页了[/yellow]")
+                            continue
+                        except Exception:
+                            console.print("[yellow]⚠️ 没有下一页了[/yellow]")
+                    elif result == "prev_page":
+                        # 浏览器翻到上一页
+                        try:
+                            success = browser.prev_page()
+                            if success:
+                                browser_navigated = True  # 下一轮重新提取
+                            else:
+                                console.print("[yellow]⚠️ 没有上一页了[/yellow]")
+                            continue
+                        except Exception:
+                            console.print("[yellow]⚠️ 没有上一页了[/yellow]")
                     elif result == "refresh":
                         console.print("[yellow]🔄 正在刷新页面...[/yellow]")
                         try:
@@ -523,6 +634,22 @@ class WeReadCLI:
                                         if refresh_ok:
                                             browser_navigated = True
                                             continue
+                                    elif result == "next_page":
+                                        try:
+                                            success = browser.next_page()
+                                            if success:
+                                                browser_navigated = True
+                                            continue
+                                        except Exception:
+                                            pass
+                                    elif result == "prev_page":
+                                        try:
+                                            success = browser.prev_page()
+                                            if success:
+                                                browser_navigated = True
+                                            continue
+                                        except Exception:
+                                            pass
                                 else:
                                     console.print("[yellow]⚠️  翻页后仍无内容，按 n 进入下一章[/yellow]")
                             else:
@@ -546,7 +673,14 @@ class WeReadCLI:
                 menu_items.append("  [cyan]b[/cyan] - 上一页")  # 始终显示，浏览器会处理边界
                 menu_items.append("  [cyan]r[/cyan] - 刷新页面")
                 menu_items.append("  [cyan]c[/cyan] - 章节列表")
-                menu_items.append("  [cyan]m[/cyan] - 切换翻页模式")
+                menu_items.append("  [cyan]d[/cyan] - 双栏诊断信息")
+                # 显示当前阅读模式
+                try:
+                    current_mode = browser.get_current_reading_mode()
+                    mode_label = "📜 滚动" if current_mode == "scroll" else "📖 双栏"
+                    menu_items.append(f"  [cyan]m[/cyan] - 切换阅读模式（当前: {mode_label}）")
+                except Exception:
+                    menu_items.append("  [cyan]m[/cyan] - 切换阅读模式")
                 menu_items.append("  [cyan]q[/cyan] - 返回主菜单")
                 
                 # 两列排版
@@ -559,7 +693,7 @@ class WeReadCLI:
 
                 action = Prompt.ask(
                     "请选择",
-                    choices=["n", "p", "f", "b", "r", "c", "m", "q"],
+                    choices=["n", "p", "f", "b", "r", "c", "d", "m", "q"],
                     default="n"
                 )
 
@@ -640,13 +774,22 @@ class WeReadCLI:
                         console.print(f"[red]⚠️ 刷新异常: {e}[/red]")
                 elif action == "c":
                     try:
-                        self.show_chapters()
-                        ch_choice = IntPrompt.ask("跳转到章节 (0 取消)", default=0)
+                        self.show_chapters(highlight_index=self.current_chapter_index)
+                        ch_choice = IntPrompt.ask(
+                            "输入序号跳转（0 取消，留空直接返回目录）",
+                            default=0
+                        )
                         if 0 < ch_choice <= len(self.current_chapters):
                             self.current_chapter_index = ch_choice - 1
 
                             chapter = self.current_chapters[self.current_chapter_index]
-                            browser.go_to_chapter(int(chapter.chapter_id), chapter_title=chapter.title, chapter_index=ch_choice - 1, chapter_idx=chapter.chapter_idx)
+                            console.print(f"[yellow]📄 正在跳转到第 {ch_choice} 章：{chapter.title}...[/yellow]")
+                            browser.go_to_chapter(
+                                int(chapter.chapter_id),
+                                chapter_title=chapter.title,
+                                chapter_index=ch_choice - 1,
+                                chapter_idx=chapter.chapter_idx
+                            )
                             browser_navigated = True
                             # 保存阅读进度
                             _save_reading_state(
@@ -658,12 +801,24 @@ class WeReadCLI:
                             )
                     except Exception as e:
                         console.print(f"[red]⚠️ 章节选择异常: {e}[/red]")
+                elif action == "d":
+                    # 双栏诊断
+                    try:
+                        captured = browser._page.evaluate("() => window.__CANVAS_TEXT__ || []")
+                        if captured:
+                            debug_text = browser._reconstruct_dual_column_spread(captured, debug=True)
+                            console.print(f"[cyan]{debug_text}[/cyan]")
+                        else:
+                            console.print("[yellow]Canvas 文本为空[/yellow]")
+                    except Exception as e:
+                        console.print(f"[red]⚠️ 诊断异常: {e}[/red]")
+                    continue  # 诊断后不提取内容，等待用户下一步操作
                 elif action == "m":
                     console.print("[yellow]🔄 正在切换阅读模式...[/yellow]")
                     try:
                         new_mode = browser.toggle_reading_mode()
                         if new_mode != "unknown":
-                            mode_label = "📜 滚动模式" if new_mode == "scroll" else "📄 翻页模式"
+                            mode_label = "📜 滚动模式" if new_mode == "scroll" else "📖 双栏翻页模式"
                             console.print(f"[green]✅ 已切换到 {mode_label}[/green]")
                             browser_navigated = True  # 重新提取内容
                         else:
@@ -686,16 +841,16 @@ class WeReadCLI:
 
     def _display_content(self, text: str, chapter_info: str = "", 
                          has_prev_chapter: bool = False, has_next_chapter: bool = False) -> str:
-        """分页显示内容
+        """显示内容（回归4月模式：无页码，每次提取显示当前页面全部内容）
 
         Args:
-            text: 章节正文
+            text: 章节正文（当前浏览器页面的内容）
             chapter_info: 章节信息字符串，如 "第 3/151 章 · 第三章 改革开放"
             has_prev_chapter: 是否有上一章可跳转
             has_next_chapter: 是否有下一章可跳转
 
         Returns:
-            用户操作：'continue'（继续操作菜单）、'prev_chapter'、'next_chapter'、'refresh'、'quit'
+            用户操作：'prev_chapter'、'next_chapter'、'next_page'、'prev_page'、'refresh'、'quit'
         """
         try:
             if not text or not text.strip():
@@ -709,91 +864,44 @@ class WeReadCLI:
                 console.print("[dim]（本页无文本内容）[/dim]")
                 return "continue"
 
-            lines_per_page = 25
-            page = 0
-            total_pages = max(1, len(paragraphs) // lines_per_page + (1 if len(paragraphs) % lines_per_page else 0))
+            # 页眉：显示章节信息（无页码）
+            if chapter_info:
+                console.print(f"[bold cyan]{chapter_info}[/bold cyan]\n")
 
-            while page < total_pages:
-                start = page * lines_per_page
-                end = min(start + lines_per_page, len(paragraphs))
-                current_paragraphs = paragraphs[start:end]
+            # 显示全部内容
+            content_text = "\n".join(paragraphs)
+            console.print(content_text)
 
-                # 页眉：章节信息
-                if chapter_info:
-                    console.print(f"[bold cyan]{chapter_info}  │  第 {page + 1}/{total_pages} 页[/bold cyan]\n")
+            # 页脚
+            console.print(f"\n[dim]— 内容结束 —[/dim]\n")
 
-                # 显示当前页
-                content_text = "\n".join(current_paragraphs)
-                console.print(content_text)
+            # 等待用户操作：回车=下一页
+            choices = [""]
+            hints = "Enter 下一页"
+            choices.append("b")
+            hints += "，b 上一页"
+            if has_prev_chapter:
+                choices.append("p")
+                hints += "，p 上一章"
+            if has_next_chapter:
+                choices.append("n")
+                hints += "，n 下一章"
+            choices.extend(["f", "r", "q"])
+            hints += "，f 下一页，r 刷新页面，q 返回"
 
-                # 页脚
-                console.print(f"\n[dim]— 第 {page + 1}/{total_pages} 页 —[/dim]\n")
-
-                if page < total_pages - 1:
-                    # 非最后一页：可以上下翻页、跳章节、刷新、退出
-                    choices = [""]
-                    hints = "Enter 下一页"
-                    if page > 0:
-                        choices.append("b")
-                        hints += "，b 上一页"
-                    if has_prev_chapter:
-                        choices.append("p")
-                        hints += "，p 上一章"
-                    if has_next_chapter:
-                        choices.append("n")
-                        hints += "，n 下一章"
-                    choices.append("r")
-                    hints += "，r 刷新页面"
-                    choices.append("q")
-                    hints += "，q 返回"
-
-                    next_action = Prompt.ask(hints, choices=choices, default="")
-                    if next_action == "q":
-                        return "quit"
-                    elif next_action == "p":
-                        return "prev_chapter"
-                    elif next_action == "n":
-                        return "next_chapter"
-                    elif next_action == "r":
-                        return "refresh"
-                    elif next_action == "b":
-                        if page > 0:
-                            page -= 1
-                            continue
-                else:
-                    # 最后一页：始终显示 上一页 选项
-                    choices = [""]
-                    hints = "Enter 下一章"
-                    if page > 0:
-                        choices.append("b")
-                        hints += "，b 上一页"
-                    if has_prev_chapter:
-                        choices.append("p")
-                        hints += "，p 上一章"
-                    if has_next_chapter:
-                        choices.append("n")
-                        hints += "，n 下一章"
-                    choices.append("r")
-                    hints += "，r 刷新页面"
-                    choices.append("q")
-                    hints += "，q 返回"
-
-                    next_action = Prompt.ask(hints, choices=choices, default="")
-                    if next_action == "q":
-                        return "quit"
-                    elif next_action == "p":
-                        return "prev_chapter"
-                    elif next_action == "n":
-                        return "next_chapter"
-                    elif next_action == "r":
-                        return "refresh"
-                    elif next_action == "b":
-                        if page > 0:
-                            page -= 1
-                            continue
-
-                page += 1
-
+            next_action = Prompt.ask(hints, choices=choices, default="")
+            if next_action == "q":
+                return "quit"
+            elif next_action == "p":
+                return "prev_chapter"
+            elif next_action == "n":
+                return "next_chapter"
+            elif next_action == "f" or next_action == "":
+                return "next_page"
+            elif next_action == "b":
+                return "prev_page"
+            elif next_action == "r":
+                return "refresh"
             return "continue"
         except KeyboardInterrupt:
             return "quit"
