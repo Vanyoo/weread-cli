@@ -177,8 +177,81 @@ class WeReadCLI:
             console.print("[yellow]书架为空[/yellow]\n")
             return None
 
+        if interactive:
+            page_size = 20
+            page = 0
+            filtered = list(enumerate(books, 1))
+
+            while True:
+                total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
+                page = max(0, min(page, total_pages - 1))
+                start = page * page_size
+                page_items = filtered[start:start + page_size]
+
+                table = Table(
+                    title=f"📚 我的书架（第 {page + 1}/{total_pages} 页，共 {len(filtered)} 本）",
+                    show_lines=True
+                )
+                table.add_column("序", style="cyan", justify="center", width=8)
+                table.add_column("书名", style="green", width=50)
+                table.add_column("作者", style="yellow", width=20)
+                table.add_column("进度", justify="center", width=10)
+
+                for idx, book in page_items:
+                    progress_str = f"{book.progress}%" if book.progress > 0 else "未读"
+                    table.add_row(
+                        str(idx),
+                        book.title[:48] + "..." if len(book.title) > 50 else book.title,
+                        book.author[:18] + "..." if len(book.author) > 20 else book.author,
+                        progress_str
+                    )
+
+                console.print(table)
+                console.print("[dim]输入序号阅读，n 下一页，p 上一页，/关键词过滤，a 全部，0 返回主菜单[/dim]")
+                choice = Prompt.ask("请选择", default="0").strip()
+
+                if choice == "0":
+                    return books
+                if choice.lower() == "n":
+                    if page < total_pages - 1:
+                        page += 1
+                    else:
+                        console.print("[yellow]⚠️ 已是最后一页[/yellow]\n")
+                    continue
+                if choice.lower() == "p":
+                    if page > 0:
+                        page -= 1
+                    else:
+                        console.print("[yellow]⚠️ 已是第一页[/yellow]\n")
+                    continue
+                if choice.lower() == "a":
+                    filtered = list(enumerate(books, 1))
+                    page = 0
+                    continue
+                if choice.startswith("/"):
+                    query = choice[1:].strip().lower()
+                    if query:
+                        filtered = [
+                            item for item in enumerate(books, 1)
+                            if query in item[1].title.lower() or query in item[1].author.lower()
+                        ]
+                        page = 0
+                        if not filtered:
+                            console.print(f"[yellow]未找到包含 '{query}' 的书籍[/yellow]\n")
+                            filtered = list(enumerate(books, 1))
+                    continue
+                if choice.isdigit():
+                    num = int(choice)
+                    if 1 <= num <= len(books):
+                        self._load_book_for_reading(books[num - 1])
+                        return books
+                    console.print("[yellow]⚠️ 无效序号[/yellow]\n")
+                    continue
+
+                console.print("[yellow]⚠️ 无效输入[/yellow]\n")
+
         table = Table(title="📚 我的书架", show_lines=True)
-        table.add_column("序号", style="cyan", justify="center", width=6)
+        table.add_column("序", style="cyan", justify="center", width=8)
         table.add_column("书名", style="green", width=50)
         table.add_column("作者", style="yellow", width=20)
         table.add_column("进度", justify="center", width=10)
@@ -194,12 +267,6 @@ class WeReadCLI:
 
         console.print(table)
         console.print()
-
-        if interactive:
-            console.print("[dim]输入序号直接阅读，0 返回主菜单[/dim]")
-            choice = IntPrompt.ask("请选择", default=0)
-            if 1 <= choice <= len(books):
-                self._load_book_for_reading(books[choice - 1])
 
         return books
 
