@@ -24,6 +24,87 @@ from dataclasses import dataclass, field
 from .debug import debug_print
 
 
+CANVAS_TEXT_HOOK_SCRIPT = """
+(() => {
+    window.__CANVAS_TEXT__ = window.__CANVAS_TEXT__ || [];
+    window.__CANVAS_TEXT_SEQ__ = window.__CANVAS_TEXT_SEQ__ || 0;
+    window.__WEREAD_CLEAR_CANVAS_TEXT__ = function() {
+        window.__CANVAS_TEXT__ = [];
+        window.__CANVAS_TEXT_SEQ__ = 0;
+    };
+    if (window.__CANVAS_TEXT_HOOKED__) return;
+    window.__CANVAS_TEXT_HOOKED__ = true;
+
+    function matrixToArray(transform) {
+        if (!transform) return null;
+        return [transform.a, transform.b, transform.c, transform.d, transform.e, transform.f]
+            .map((value) => Math.round(value * 1000) / 1000);
+    }
+
+    function capture(ctx, op, text, x, y, maxWidth) {
+        if (!text || typeof text !== 'string') return;
+        try {
+            const rect = ctx.canvas.getBoundingClientRect();
+            const transform = ctx.getTransform ? ctx.getTransform() : null;
+            window.__CANVAS_TEXT__.push({
+                text,
+                op,
+                x,
+                y,
+                absX: x + rect.left,
+                absY: y + rect.top,
+                canvasOffsetX: Math.round(rect.left),
+                canvasOffsetY: Math.round(rect.top),
+                canvasWidth: Math.round(rect.width),
+                canvasHeight: Math.round(rect.height),
+                font: ctx.font || '',
+                fillStyle: String(ctx.fillStyle || ''),
+                strokeStyle: String(ctx.strokeStyle || ''),
+                textAlign: ctx.textAlign || '',
+                textBaseline: ctx.textBaseline || '',
+                globalAlpha: ctx.globalAlpha,
+                transform: matrixToArray(transform),
+                maxWidth: typeof maxWidth === 'number' ? maxWidth : null,
+                timestamp: Date.now(),
+                seq: ++window.__CANVAS_TEXT_SEQ__,
+                url: location.href
+            });
+        } catch (e) {
+            window.__CANVAS_TEXT__.push({
+                text,
+                op,
+                x,
+                y,
+                absX: x,
+                absY: y,
+                canvasOffsetX: 0,
+                canvasOffsetY: 0,
+                canvasWidth: 0,
+                canvasHeight: 0,
+                timestamp: Date.now(),
+                seq: ++window.__CANVAS_TEXT_SEQ__,
+                url: location.href
+            });
+        }
+    }
+
+    const proto = CanvasRenderingContext2D.prototype;
+    const origFillText = proto.fillText;
+    const origStrokeText = proto.strokeText;
+
+    proto.fillText = function(text, x, y, maxWidth) {
+        capture(this, 'fillText', text, x, y, maxWidth);
+        return origFillText.call(this, text, x, y, maxWidth);
+    };
+
+    proto.strokeText = function(text, x, y, maxWidth) {
+        capture(this, 'strokeText', text, x, y, maxWidth);
+        return origStrokeText.call(this, text, x, y, maxWidth);
+    };
+})();
+"""
+
+
 def _md5(data: str) -> str:
     return hashlib.md5(data.encode()).hexdigest()
 
@@ -238,43 +319,8 @@ class CDPBrowserManager:
             if self.mode == "headed":
                 self._minimize_window()
             
-            # 注入 Canvas 文本拦截脚本
-            # 微信读书使用 Canvas 渲染正文，通过拦截 fillText 可以提取文本
-            # 关键：捕获 canvas 元素的屏幕偏移量，用于区分左右页
-            self._page.add_init_script("""
-                window.__CANVAS_TEXT__ = [];
-                if (!window.__CANVAS_TEXT_HOOKED__) {
-                    window.__CANVAS_TEXT_HOOKED__ = true;
-                    const origFillText = CanvasRenderingContext2D.prototype.fillText;
-                    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-                        if (text && typeof text === 'string' && text.length > 0) {
-                            try {
-                                var rect = this.canvas.getBoundingClientRect();
-                                window.__CANVAS_TEXT__.push({
-                                    text: text,
-                                    x: x,
-                                    y: y + rect.top,
-                                    canvasOffsetX: Math.round(rect.left),
-                                    canvasOffsetY: Math.round(rect.top),
-                                    canvasWidth: Math.round(rect.width),
-                                    timestamp: Date.now()
-                                });
-                            } catch(e) {
-                                window.__CANVAS_TEXT__.push({
-                                    text: text,
-                                    x: x,
-                                    y: y,
-                                    canvasOffsetX: 0,
-                                    canvasOffsetY: 0,
-                                    canvasWidth: 0,
-                                    timestamp: Date.now()
-                                });
-                            }
-                        }
-                        return origFillText.call(this, text, x, y, maxWidth);
-                    };
-                }
-            """)
+            self._add_canvas_init_script()
+            self._inject_canvas_hook()
 
             return True
 
@@ -317,6 +363,24 @@ class CDPBrowserManager:
     def is_alive(self) -> bool:
         return self._page is not None
 
+    def _add_canvas_init_script(self) -> None:
+        """Ensure the Canvas hook is installed before future page scripts run."""
+        if self._page:
+            self._page.add_init_script(CANVAS_TEXT_HOOK_SCRIPT)
+
+    def _clear_canvas_text(self) -> None:
+        if self._page:
+            self._page.evaluate("""
+                () => {
+                    if (window.__WEREAD_CLEAR_CANVAS_TEXT__) {
+                        window.__WEREAD_CLEAR_CANVAS_TEXT__();
+                    } else {
+                        window.__CANVAS_TEXT__ = [];
+                        window.__CANVAS_TEXT_SEQ__ = 0;
+                    }
+                }
+            """)
+
     # ── 导航 ─────────────────────────────────────────────────
 
     def _detect_chapter_index_from_url(self, url: str) -> Optional[int]:
@@ -347,42 +411,6 @@ class CDPBrowserManager:
         url = f"https://weread.qq.com/web/reader/{encoded_book}"
 
         try:
-            # First inject the canvas text interception script
-            self._page.add_init_script("""
-                window.__CANVAS_TEXT__ = [];
-                if (!window.__CANVAS_TEXT_HOOKED__) {
-                    window.__CANVAS_TEXT_HOOKED__ = true;
-                    const origFillText = CanvasRenderingContext2D.prototype.fillText;
-                    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-                        if (text && typeof text === 'string' && text.length > 0) {
-                            try {
-                                var rect = this.canvas.getBoundingClientRect();
-                                window.__CANVAS_TEXT__.push({
-                                    text: text,
-                                    x: x,
-                                    y: y + rect.top,
-                                    canvasOffsetX: Math.round(rect.left),
-                                    canvasOffsetY: Math.round(rect.top),
-                                    canvasWidth: Math.round(rect.width),
-                                    timestamp: Date.now()
-                                });
-                            } catch(e) {
-                                window.__CANVAS_TEXT__.push({
-                                    text: text,
-                                    x: x,
-                                    y: y,
-                                    canvasOffsetX: 0,
-                                    canvasOffsetY: 0,
-                                    canvasWidth: 0,
-                                    timestamp: Date.now()
-                                });
-                            }
-                        }
-                        return origFillText.call(this, text, x, y, maxWidth);
-                    };
-                }
-            """)
-
             self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
             self._page.wait_for_timeout(3000)
 
@@ -472,7 +500,7 @@ class CDPBrowserManager:
                 return None
 
             # 清空旧 Canvas 文本
-            self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+            self._clear_canvas_text()
 
             # 构建完整章节 URL: {book_hash}k{chapter_hash}
             # chapter_hash 使用 chapter_idx（API 返回的章节索引），不是 chapter_uid
@@ -706,7 +734,7 @@ class CDPBrowserManager:
                 prev_scroll_top = scroll_top
 
                 # 清掉旧 Canvas 文本，向下滚动一屏
-                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                self._clear_canvas_text()
                 self._page.evaluate(f"() => window.scrollBy(0, {client_height - 50})")
                 self._page.wait_for_timeout(1200)
 
@@ -1046,40 +1074,7 @@ class CDPBrowserManager:
 
     def _inject_canvas_hook(self):
         """注入 Canvas 文本拦截脚本"""
-        self._page.evaluate("""
-            window.__CANVAS_TEXT__ = window.__CANVAS_TEXT__ || [];
-            if (!window.__CANVAS_TEXT_HOOKED__) {
-                window.__CANVAS_TEXT_HOOKED__ = true;
-                const origFillText = CanvasRenderingContext2D.prototype.fillText;
-                CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-                    if (text && typeof text === 'string' && text.length > 0) {
-                        try {
-                            var rect = this.canvas.getBoundingClientRect();
-                            window.__CANVAS_TEXT__.push({
-                                text: text,
-                                x: x,
-                                y: y + rect.top,
-                                canvasOffsetX: Math.round(rect.left),
-                                canvasOffsetY: Math.round(rect.top),
-                                canvasWidth: Math.round(rect.width),
-                                timestamp: Date.now()
-                            });
-                        } catch(e) {
-                            window.__CANVAS_TEXT__.push({
-                                text: text,
-                                x: x,
-                                y: y,
-                                canvasOffsetX: 0,
-                                canvasOffsetY: 0,
-                                canvasWidth: 0,
-                                timestamp: Date.now()
-                            });
-                        }
-                    }
-                    return origFillText.call(this, text, x, y, maxWidth);
-                };
-            }
-        """)
+        self._page.evaluate(CANVAS_TEXT_HOOK_SCRIPT)
 
     def _extract_content_info(self) -> Optional[Dict]:
         """提取当前页面内容信息"""
@@ -1159,7 +1154,7 @@ class CDPBrowserManager:
                 return False
             
             # 先清除旧 canvas 文本
-            self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+            self._clear_canvas_text()
             # force=True 避免元素被遮挡或过渡状态导致失败
             btn.click(force=True, timeout=5000)
             # 等待新内容渲染（Canvas fillText 被调用）
@@ -1178,7 +1173,7 @@ class CDPBrowserManager:
                 btn = self._find_text('上一章')
             
             if btn:
-                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                self._clear_canvas_text()
                 btn.click(force=True, timeout=5000)
                 self._wait_for_canvas_text()
                 return True
@@ -1219,7 +1214,7 @@ class CDPBrowserManager:
             # 策略 1: 直接找"下一章"按钮
             btn = self._find_text('下一章')
             if btn:
-                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                self._clear_canvas_text()
                 btn.click(force=True, timeout=5000)
                 self._wait_for_canvas_text()
                 return True
@@ -1230,14 +1225,14 @@ class CDPBrowserManager:
                 btn = self._find_text('下一页')
                 if not btn:
                     break
-                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                self._clear_canvas_text()
                 btn.click(force=True, timeout=3000)
                 self._page.wait_for_timeout(400)
             
             # 翻完后检查是否出现了"下一章"
             btn = self._find_text('下一章')
             if btn:
-                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                self._clear_canvas_text()
                 btn.click(force=True, timeout=5000)
                 self._wait_for_canvas_text()
                 return True
@@ -1256,7 +1251,7 @@ class CDPBrowserManager:
             # 优先找"上一章"按钮
             btn = self._find_text('上一章')
             if btn:
-                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                self._clear_canvas_text()
                 btn.click(force=True, timeout=5000)
                 self._wait_for_canvas_text()
                 return True
@@ -1325,7 +1320,7 @@ class CDPBrowserManager:
             }""", direction)
 
             # 清除旧文本，等待新章节渲染
-            self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+            self._clear_canvas_text()
             self._page.wait_for_timeout(1000)
 
             # 关闭目录
@@ -1520,7 +1515,7 @@ class CDPBrowserManager:
 
             # 清除旧 Canvas 文本
             try:
-                self._page.evaluate("() => window.__CANVAS_TEXT__ = []")
+                self._clear_canvas_text()
             except Exception:
                 pass
 
