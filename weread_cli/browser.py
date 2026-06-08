@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 
+from .debug import debug_print
+
 
 def _md5(data: str) -> str:
     return hashlib.md5(data.encode()).hexdigest()
@@ -889,7 +891,7 @@ class CDPBrowserManager:
         if second_spread_start:
             items = items[:second_spread_start]
             ys = ys[:second_spread_start]
-            print(f"[多页检测] 截断预渲染内容: {len(items)} 字符")
+            debug_print(f"[多页检测] 截断预渲染内容: {len(items)} 字符")
 
         left_items = items[:best_split]
         right_items = items[best_split:]
@@ -900,9 +902,9 @@ class CDPBrowserManager:
             left_y_max = max(i.get('y', 0) for i in left_items)
             right_y_min = min(i.get('y', 0) for i in right_items)
             right_y_max = max(i.get('y', 0) for i in right_items)
-            print(f"[双栏分割] 分界点={best_split}/{len(items)}, y突变={best_drop:.0f}")
-            print(f"[双栏分割] 左栏 y: {left_y_min:.0f}~{left_y_max:.0f} ({len(left_items)}字符)")
-            print(f"[双栏分割] 右栏 y: {right_y_min:.0f}~{right_y_max:.0f} ({len(right_items)}字符)")
+            debug_print(f"[双栏分割] 分界点={best_split}/{len(items)}, y突变={best_drop:.0f}")
+            debug_print(f"[双栏分割] 左栏 y: {left_y_min:.0f}~{left_y_max:.0f} ({len(left_items)}字符)")
+            debug_print(f"[双栏分割] 右栏 y: {right_y_min:.0f}~{right_y_max:.0f} ({len(right_items)}字符)")
 
         debug_info = []
         if debug:
@@ -981,7 +983,7 @@ class CDPBrowserManager:
             # 首次打开时等待 Canvas 渲染完成
             if wait_for_render:
                 if not self._wait_for_canvas_text(timeout_ms=15000):
-                    print("[内容提取] Canvas 文本为空，等待超时")
+                    debug_print("[内容提取] Canvas 文本为空，等待超时")
                     return None
                 self._page.wait_for_timeout(1000)
 
@@ -999,14 +1001,14 @@ class CDPBrowserManager:
                 # 调试输出
                 if text and len(text) > 100:
                     preview = text[:80].replace('\n', ' ')
-                    print(f"[内容提取] 双栏模式, 重建长度={len(text)}, 预览: {preview}")
+                    debug_print(f"[内容提取] 双栏模式, 重建长度={len(text)}, 预览: {preview}")
             else:
                 # 滚动/单栏：直接重建
                 from .canvas_extractor import reconstruct_text_from_canvas
                 text = reconstruct_text_from_canvas(captured)
                 if text and len(text) > 100:
                     preview = text[:80].replace('\n', ' ')
-                    print(f"[内容提取] 单栏模式, 重建长度={len(text)}, 预览: {preview}")
+                    debug_print(f"[内容提取] 单栏模式, 重建长度={len(text)}, 预览: {preview}")
 
             if not text or len(text) < 50:
                 return None

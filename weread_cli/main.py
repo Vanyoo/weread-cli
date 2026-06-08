@@ -20,6 +20,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from .api import WeReadAPI
+from .debug import is_debug_enabled
 from .login import QRLogin
 from .models import Book
 
@@ -499,7 +500,7 @@ class WeReadCLI:
                     raw = browser.get_content_with_title()
 
                 # 打印提取的章节标题和内容首句用于调试
-                if raw:
+                if raw and is_debug_enabled():
                     if isinstance(raw, dict):
                         debug_title = raw.get("title", "")
                         debug_text = raw.get("content", "")[:50]
