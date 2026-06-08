@@ -967,12 +967,24 @@ class CDPBrowserManager:
 
         return result
 
-    def get_content_with_title(self) -> Optional[Dict]:
-        """提取内容 + 章节标题（通过 Canvas fillText 拦截）"""
+    def get_content_with_title(self, wait_for_render: bool = False) -> Optional[Dict]:
+        """提取内容 + 章节标题（通过 Canvas fillText 拦截）
+
+        Args:
+            wait_for_render: 首次调用时设为 True，等待 Canvas 渲染完成后再提取。
+                这解决了首次打开程序时 Canvas 尚未渲染导致的超时问题。
+        """
         if not self.is_alive:
             return None
 
         try:
+            # 首次打开时等待 Canvas 渲染完成
+            if wait_for_render:
+                if not self._wait_for_canvas_text(timeout_ms=15000):
+                    print("[内容提取] Canvas 文本为空，等待超时")
+                    return None
+                self._page.wait_for_timeout(1000)
+
             captured = self._page.evaluate("() => window.__CANVAS_TEXT__ || []")
 
             if not captured:

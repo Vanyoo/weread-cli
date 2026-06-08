@@ -408,7 +408,7 @@ class WeReadCLI:
         import time
         start = time.time()
         detected_chapter_idx = None
-        while time.time() - start < 10:
+        while time.time() - start < 15:  # 从 10s 增加到 15s，给冷启动更多时间
             current_url = browser._page.url
             detected_chapter_idx = browser._detect_chapter_index_from_url(current_url)
             if detected_chapter_idx is not None:
@@ -423,20 +423,26 @@ class WeReadCLI:
             console.print(f"[yellow]📄 使用 CLI 记录的章节: 第 {self.current_chapter_index + 1} 章[/yellow]")
 
         # 关键修复：WeRead 自动恢复过程中 Canvas 累积了多页文本
-        # 方案：翻到下一页 → 清空 Canvas → 翻回当前页 → 只捕获当前页渲染
+        # 方案：等待 Canvas 渲染完成 → 翻到下一页 → 清空 Canvas → 翻回当前页 → 只捕获当前页渲染
         console.print("[dim]🔄 刷新 Canvas 内容...[/dim]")
+        
+        # 等待 Canvas 渲染完成（首次打开时需要等待 WeRead SPA 完成数据加载和渲染）
+        browser._wait_for_canvas_text(timeout_ms=15000)
+        browser._page.wait_for_timeout(1500)
         
         next_btn = browser._find_text('下一页')
         if next_btn:
             next_btn.click(force=True)
-            browser._page.wait_for_timeout(800)
+            browser._page.wait_for_timeout(1200)
             # 清空下一页的文本
             browser._page.evaluate("() => { if (window.__CANVAS_TEXT__) window.__CANVAS_TEXT__ = []; }")
             # 翻回当前页
             prev_btn = browser._find_text('上一页')
             if prev_btn:
                 prev_btn.click(force=True)
-                browser._page.wait_for_timeout(800)
+                browser._page.wait_for_timeout(1500)
+                # 等待翻回后 Canvas 重新渲染
+                browser._wait_for_canvas_text(timeout_ms=10000)
             else:
                 # 翻到下一页后没有"上一页"，说明整本书只有1页
                 # 无法用翻页刷新，依赖多页截断逻辑（应该只有1页所以没问题）
@@ -475,8 +481,8 @@ class WeReadCLI:
                 # 获取内容
                 if first_open:
                     # 首次打开：_enter_reading_mode() 已导航到目标章节，
-                    # 直接从浏览器当前页面提取内容
-                    raw = browser.get_content_with_title()
+                    # 等待 Canvas 渲染完成后提取（解决首次打开超时问题）
+                    raw = browser.get_content_with_title(wait_for_render=True)
                     browser_navigated = True  # 后续同一章内的翻页也从浏览器提取
                     first_open = False
                 elif browser_navigated:
@@ -536,13 +542,6 @@ class WeReadCLI:
                     chapter_info = f"第 {current_chap_num}/{total_chaps} 章 · {title}"
                     has_prev = self.current_chapter_index > 0
                     has_next = self.current_chapter_index < total_chaps - 1
-
-                    console.print(Panel(
-                        f"[bold]{self.current_book.title}[/bold]\n"
-                        f"[dim]{title}[/dim]",
-                        title="📖 阅读中",
-                        border_style="green"
-                    ))
 
                     # 显示内容（无页码，回归4月模式）
                     result = self._display_content(content_text, chapter_info, has_prev, has_next)
@@ -872,8 +871,8 @@ class WeReadCLI:
             content_text = "\n".join(paragraphs)
             console.print(content_text)
 
-            # 页脚
-            console.print(f"\n[dim]— 内容结束 —[/dim]\n")
+            # 页脚（不再显示"内容结束"）
+            console.print()
 
             # 等待用户操作：回车=下一页
             choices = [""]
