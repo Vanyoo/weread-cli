@@ -33,21 +33,33 @@ def reconstruct_text_from_canvas(captured: List[Dict]) -> str:
     y_tol = 3.0
 
     deduped = []
+    seen_buckets = {}
     for item in items:
         x = item.get("x", 0)
         y = item.get("y", 0)
         text = item["text"]
+        bucket_x = round(x / x_tol)
+        bucket_y = round(y / y_tol)
 
         is_dup = False
-        for ex in deduped:
-            if (abs(ex["x"] - x) < x_tol and
-                    abs(ex["y"] - y) < y_tol and
-                    ex["text"] == text):
-                is_dup = True
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                bucket_items = seen_buckets.get((bucket_x + dx, bucket_y + dy, text), ())
+                for ex_x, ex_y in bucket_items:
+                    if abs(ex_x - x) < x_tol and abs(ex_y - y) < y_tol:
+                        is_dup = True
+                        break
+                if is_dup:
+                    break
+            if is_dup:
                 break
 
         if not is_dup:
-            deduped.append(item)
+            normalized = dict(item)
+            normalized["x"] = x
+            normalized["y"] = y
+            deduped.append(normalized)
+            seen_buckets.setdefault((bucket_x, bucket_y, text), []).append((x, y))
 
     if not deduped:
         return ""
