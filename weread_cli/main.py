@@ -591,6 +591,55 @@ class WeReadCLI:
                                 console.print("[red]❌ 刷新失败[/red]")
                         except Exception as e:
                             console.print(f"[red]⚠️ 刷新异常: {e}[/red]")
+                    elif result == "chapters":
+                        try:
+                            self.show_chapters(highlight_index=self.current_chapter_index)
+                            ch_choice = IntPrompt.ask("输入序号跳转（0 取消）", default=0)
+                            if 0 < ch_choice <= len(self.current_chapters):
+                                self.current_chapter_index = ch_choice - 1
+                                chapter = self.current_chapters[self.current_chapter_index]
+                                console.print(f"[yellow]📄 正在跳转到第 {ch_choice} 章：{chapter.title}...[/yellow]")
+                                browser.go_to_chapter(
+                                    int(chapter.chapter_id),
+                                    chapter_title=chapter.title,
+                                    chapter_index=ch_choice - 1,
+                                    chapter_idx=chapter.chapter_idx
+                                )
+                                browser_navigated = True
+                                _save_reading_state(
+                                    self.current_book.book_id,
+                                    self.current_book.title,
+                                    self.current_book.author,
+                                    self.current_chapter_index,
+                                    self.current_chapters,
+                                )
+                                continue
+                        except Exception as e:
+                            console.print(f"[red]⚠️ 章节选择异常: {e}[/red]")
+                    elif result == "debug":
+                        try:
+                            captured = browser._page.evaluate("() => window.__CANVAS_TEXT__ || []")
+                            if captured:
+                                debug_text = browser._reconstruct_dual_column_spread(captured, debug=True)
+                                console.print(f"[cyan]{debug_text}[/cyan]")
+                            else:
+                                console.print("[yellow]Canvas 文本为空[/yellow]")
+                        except Exception as e:
+                            console.print(f"[red]⚠️ 诊断异常: {e}[/red]")
+                        continue
+                    elif result == "toggle_mode":
+                        console.print("[yellow]🔄 正在切换阅读模式...[/yellow]")
+                        try:
+                            new_mode = browser.toggle_reading_mode()
+                            if new_mode != "unknown":
+                                mode_label = "📜 滚动模式" if new_mode == "scroll" else "📖 双栏翻页模式"
+                                console.print(f"[green]✅ 已切换到 {mode_label}[/green]")
+                                browser_navigated = True
+                                continue
+                            else:
+                                console.print("[yellow]⚠️ 切换模式失败[/yellow]")
+                        except Exception as e:
+                            console.print(f"[red]⚠️ 切换模式异常: {e}[/red]")
                 else:
                     # 内容为空，检测页面是否过期
                     if browser.is_page_stale():
@@ -657,178 +706,24 @@ class WeReadCLI:
                         except Exception:
                             console.print("[red]⚠️  翻页失败，页面可能已变化[/red]")
 
-                # 操作菜单（根据当前位置动态显示选项）
-                console.print()
-                console.print("[bold]操作菜单：[/bold]")
-                total = len(self.current_chapters)
-                current = self.current_chapter_index + 1
-                menu_items = []
-                
-                if self.current_chapter_index < total - 1:
-                    menu_items.append("  [cyan]n[/cyan] - 下一章")
-                else:
-                    menu_items.append("  [dim]n[/dim] - 已是最后一章")
-                menu_items.append("  [cyan]p[/cyan] - 上一章" if self.current_chapter_index > 0 else "  [dim]p[/dim] - 已是第一章")
-                menu_items.append("  [cyan]f[/cyan] - 下一页")
-                menu_items.append("  [cyan]b[/cyan] - 上一页")  # 始终显示，浏览器会处理边界
-                menu_items.append("  [cyan]r[/cyan] - 刷新页面")
-                menu_items.append("  [cyan]c[/cyan] - 章节列表")
-                menu_items.append("  [cyan]d[/cyan] - 双栏诊断信息")
-                # 显示当前阅读模式
-                try:
-                    current_mode = browser.get_current_reading_mode()
-                    mode_label = "📜 滚动" if current_mode == "scroll" else "📖 双栏"
-                    menu_items.append(f"  [cyan]m[/cyan] - 切换阅读模式（当前: {mode_label}）")
-                except Exception:
-                    menu_items.append("  [cyan]m[/cyan] - 切换阅读模式")
-                menu_items.append("  [cyan]q[/cyan] - 返回主菜单")
-                
-                # 两列排版
-                for i in range(0, len(menu_items), 2):
-                    line = menu_items[i]
-                    if i + 1 < len(menu_items):
-                        line += "    " + menu_items[i + 1]
-                    console.print(line)
-                console.print(f"[dim]当前：第 {current}/{total} 章[/dim]")
-
                 action = Prompt.ask(
-                    "请选择",
-                    choices=["n", "p", "f", "b", "r", "c", "d", "m", "q"],
-                    default="n"
+                    "内容未显示，r 刷新，n 下一章，q 返回",
+                    choices=["r", "n", "q"],
+                    default="r",
                 )
-
-                if action == "n":
-                    if self.current_chapter_index >= total - 1:
-                        console.print("[yellow]⚠️ 已是最后一章[/yellow]")
-                        continue
-                    # 使用浏览器下一章（会自动处理章节过渡）
-                    console.print("[dim]正在跳转下一章...[/dim]")
+                if action == "q":
+                    break
+                if action == "n" and self.current_chapter_index < len(self.current_chapters) - 1:
+                    self.current_chapter_index += 1
+                    browser_navigated = False
+                    continue
+                if action == "r":
                     try:
-                        success = browser.next_chapter()
-                        if success:
+                        if browser.refresh_current_page():
                             browser_navigated = True
-                            if self.current_chapter_index < len(self.current_chapters) - 1:
-                                self.current_chapter_index += 1
-                            # 保存最新 Cookie 和阅读进度
-                            browser.save_session_cookies(self.login_manager.cookie_file)
-                            _save_reading_state(
-                                self.current_book.book_id,
-                                self.current_book.title,
-                                self.current_book.author,
-                                self.current_chapter_index,
-                                self.current_chapters,
-                            )
-                        else:
-                            console.print("[yellow]⚠️ 下一章跳转失败，可能已是末尾[/yellow]")
-                    except Exception as e:
-                        console.print(f"[red]⚠️ 下一章跳转异常: {e}[/red]")
-                elif action == "p":
-                    console.print("[dim]正在跳转上一章...[/dim]")
-                    try:
-                        success = browser.prev_chapter()
-                        if success:
-                            browser_navigated = True
-                            if self.current_chapter_index > 0:
-                                self.current_chapter_index -= 1
-                            # 保存阅读进度
-                            _save_reading_state(
-                                self.current_book.book_id,
-                                self.current_book.title,
-                                self.current_book.author,
-                                self.current_chapter_index,
-                                self.current_chapters,
-                            )
-                    except Exception as e:
-                        console.print(f"[red]⚠️ 上一章跳转异常: {e}[/red]")
-                elif action == "f":
-                    try:
-                        success = browser.next_page()
-                        if success:
-                            browser_navigated = True
-                            console.print("[dim]已翻到下一页[/dim]")
-                        else:
-                            console.print("[yellow]⚠️ 没有下一页了，试试按 n 进入下一章[/yellow]")
-                    except Exception as e:
-                        console.print(f"[red]⚠️ 翻页异常: {e}[/red]")
-                elif action == "b":
-                    try:
-                        success = browser.prev_page()
-                        if success:
-                            browser_navigated = True
-                            console.print("[dim]已翻到上一页[/dim]")
-                        else:
-                            console.print("[yellow]⚠️ 没有上一页了[/yellow]")
-                    except Exception as e:
-                        console.print(f"[red]⚠️ 上一页异常: {e}[/red]")
-                elif action == "r":
-                    try:
-                        console.print("[yellow]🔄 正在刷新页面...[/yellow]")
-                        success = browser.refresh_current_page()
-                        if success:
-                            browser_navigated = True
-                            # 重新获取章节 URL 状态
-                            browser._page.wait_for_timeout(1000)
-                        else:
-                            console.print("[red]❌ 刷新失败[/red]")
+                            continue
                     except Exception as e:
                         console.print(f"[red]⚠️ 刷新异常: {e}[/red]")
-                elif action == "c":
-                    try:
-                        self.show_chapters(highlight_index=self.current_chapter_index)
-                        ch_choice = IntPrompt.ask(
-                            "输入序号跳转（0 取消，留空直接返回目录）",
-                            default=0
-                        )
-                        if 0 < ch_choice <= len(self.current_chapters):
-                            self.current_chapter_index = ch_choice - 1
-
-                            chapter = self.current_chapters[self.current_chapter_index]
-                            console.print(f"[yellow]📄 正在跳转到第 {ch_choice} 章：{chapter.title}...[/yellow]")
-                            browser.go_to_chapter(
-                                int(chapter.chapter_id),
-                                chapter_title=chapter.title,
-                                chapter_index=ch_choice - 1,
-                                chapter_idx=chapter.chapter_idx
-                            )
-                            browser_navigated = True
-                            # 保存阅读进度
-                            _save_reading_state(
-                                self.current_book.book_id,
-                                self.current_book.title,
-                                self.current_book.author,
-                                self.current_chapter_index,
-                                self.current_chapters,
-                            )
-                    except Exception as e:
-                        console.print(f"[red]⚠️ 章节选择异常: {e}[/red]")
-                elif action == "d":
-                    # 双栏诊断
-                    try:
-                        captured = browser._page.evaluate("() => window.__CANVAS_TEXT__ || []")
-                        if captured:
-                            debug_text = browser._reconstruct_dual_column_spread(captured, debug=True)
-                            console.print(f"[cyan]{debug_text}[/cyan]")
-                        else:
-                            console.print("[yellow]Canvas 文本为空[/yellow]")
-                    except Exception as e:
-                        console.print(f"[red]⚠️ 诊断异常: {e}[/red]")
-                    continue  # 诊断后不提取内容，等待用户下一步操作
-                elif action == "m":
-                    console.print("[yellow]🔄 正在切换阅读模式...[/yellow]")
-                    try:
-                        new_mode = browser.toggle_reading_mode()
-                        if new_mode != "unknown":
-                            mode_label = "📜 滚动模式" if new_mode == "scroll" else "📖 双栏翻页模式"
-                            console.print(f"[green]✅ 已切换到 {mode_label}[/green]")
-                            browser_navigated = True  # 重新提取内容
-                        else:
-                            console.print("[yellow]⚠️ 切换模式失败[/yellow]")
-                    except Exception as e:
-                        console.print(f"[red]⚠️ 切换模式异常: {e}[/red]")
-                elif action == "q":
-                    break
-
-                console.print()
             except KeyboardInterrupt:
                 break
             except Exception as e:
@@ -886,8 +781,8 @@ class WeReadCLI:
             if has_next_chapter:
                 choices.append("n")
                 hints += "，n 下一章"
-            choices.extend(["f", "r", "q"])
-            hints += "，f 下一页，r 刷新页面，q 返回"
+            choices.extend(["f", "c", "m", "d", "r", "q"])
+            hints += "，f 下一页，c 目录，m 模式，d 诊断，r 刷新页面，q 返回"
 
             next_action = Prompt.ask(hints, choices=choices, default="")
             if next_action == "q":
@@ -902,6 +797,12 @@ class WeReadCLI:
                 return "prev_page"
             elif next_action == "r":
                 return "refresh"
+            elif next_action == "c":
+                return "chapters"
+            elif next_action == "d":
+                return "debug"
+            elif next_action == "m":
+                return "toggle_mode"
             return "continue"
         except KeyboardInterrupt:
             return "quit"
