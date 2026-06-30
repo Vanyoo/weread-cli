@@ -368,11 +368,12 @@ class WeReadCLI:
         self._load_book_for_reading(books[choice - 1])
         return True
 
-    def show_chapters(self, highlight_index: int = -1):
+    def show_chapters(self, highlight_index: int = -1, page: int = 0):
         """显示章节列表
 
         Args:
             highlight_index: 当前章节索引（0-based），-1 表示不高亮
+            page: 页码（0-based），每页 30 章
         """
         if not self.current_book:
             console.print("[yellow]请先选择书籍[/yellow]\n")
@@ -383,20 +384,16 @@ class WeReadCLI:
             return
 
         total = len(self.current_chapters)
-
-        # 如果章节很多，只显示当前章节附近的
-        if total > 30 and highlight_index >= 0:
-            # 显示当前章节前后的章节
-            start = max(0, highlight_index - 10)
-            end = min(total, highlight_index + 11)
-            display_range = list(range(start, end))
-
-            console.print(f"[dim]共 {total} 章，显示第 {start+1}-{end} 章（当前章节附近）[/dim]\n")
-        else:
-            display_range = list(range(total))
+        page_size = 30
+        total_pages = (total + page_size - 1) // page_size
+        
+        # 计算当前页显示的章节范围
+        start = page * page_size
+        end = min(total, start + page_size)
+        display_range = list(range(start, end))
 
         table = Table(
-            title=f"📖 {self.current_book.title} - 目录",
+            title=f"📖 {self.current_book.title} - 目录 (第 {page+1}/{total_pages} 页)",
             show_lines=True
         )
         table.add_column("序号", style="cyan", justify="center", width=6)
@@ -426,7 +423,18 @@ class WeReadCLI:
                 )
 
         console.print(table)
-        console.print()
+        
+        # 显示翻页提示
+        nav_hints = []
+        if page > 0:
+            nav_hints.append("[cyan]p[/cyan] - 上一页")
+        if page < total_pages - 1:
+            nav_hints.append("[cyan]n[/cyan] - 下一页")
+        nav_hints.append("[cyan]g[/cyan] - 跳页")
+        nav_hints.append("[cyan]0[/cyan] - 返回")
+        
+        console.print(f"\n[dim]共 {total} 章 | {' | '.join(nav_hints)}[/dim]")
+        console.print("[dim]输入序号跳转到该章节[/dim]\n")
 
     # ── 阅读模式 ────────────────────────────────────────────
 
@@ -470,54 +478,10 @@ class WeReadCLI:
             console.print("[red]❌ 无法打开书籍[/red]")
             return
 
-        # 等待 WeRead SPA 完成自动恢复进度（轮询 URL 直到出现章节 hash）
-        # WeRead 初始打开 book_url 后，会从服务器获取进度并 SPA 导航到目标章节
-        console.print("[dim]⏳ 等待 WeRead 恢复阅读进度...[/dim]")
-        import time
-        start = time.time()
-        detected_chapter_idx = None
-        while time.time() - start < 15:  # 从 10s 增加到 15s，给冷启动更多时间
-            current_url = browser._page.url
-            detected_chapter_idx = browser._detect_chapter_index_from_url(current_url)
-            if detected_chapter_idx is not None:
-                break
-            browser._page.wait_for_timeout(500)
-
-        if detected_chapter_idx is not None and 0 <= detected_chapter_idx < len(self.current_chapters):
-            if detected_chapter_idx != self.current_chapter_index:
-                console.print(f"[yellow]📄 同步章节: CLI={self.current_chapter_index + 1} → WeRead={detected_chapter_idx + 1} ({self.current_chapters[detected_chapter_idx].title})[/yellow]")
-            self.current_chapter_index = detected_chapter_idx
-        else:
-            console.print(f"[yellow]📄 使用 CLI 记录的章节: 第 {self.current_chapter_index + 1} 章[/yellow]")
-
-        # 关键修复：WeRead 自动恢复过程中 Canvas 累积了多页文本
-        # 方案：等待 Canvas 渲染完成 → 翻到下一页 → 清空 Canvas → 翻回当前页 → 只捕获当前页渲染
-        console.print("[dim]🔄 刷新 Canvas 内容...[/dim]")
+        # 等待 WeRead SPA 完成加载
+        browser._page.wait_for_timeout(2000)
         
-        # 等待 Canvas 渲染完成（首次打开时需要等待 WeRead SPA 完成数据加载和渲染）
-        browser._wait_for_canvas_text(timeout_ms=15000)
-        browser._page.wait_for_timeout(1500)
-        
-        next_btn = browser._find_text('下一页')
-        if next_btn:
-            next_btn.click(force=True)
-            browser._page.wait_for_timeout(1200)
-            # 清空下一页的文本
-            browser._page.evaluate("() => { if (window.__CANVAS_TEXT__) window.__CANVAS_TEXT__ = []; }")
-            # 翻回当前页
-            prev_btn = browser._find_text('上一页')
-            if prev_btn:
-                prev_btn.click(force=True)
-                browser._page.wait_for_timeout(1500)
-                # 等待翻回后 Canvas 重新渲染
-                browser._wait_for_canvas_text(timeout_ms=10000)
-            else:
-                # 翻到下一页后没有"上一页"，说明整本书只有1页
-                # 无法用翻页刷新，依赖多页截断逻辑（应该只有1页所以没问题）
-                console.print("[dim]📄 仅1页，跳过刷新[/dim]")
-        else:
-            # 没有下一页按钮，说明在章节末尾，使用多页截断逻辑
-            console.print("[dim]📄 无下一页，依赖多页截断[/dim]")
+        console.print(f"[yellow]📄 从第 {self.current_chapter_index + 1} 章开始阅读[/yellow]")
 
         # 进入阅读模式前保存一次 Cookie
         browser.save_session_cookies(self.login_manager.cookie_file)
@@ -660,27 +624,60 @@ class WeReadCLI:
                             console.print(f"[red]⚠️ 刷新异常: {e}[/red]")
                     elif result == "chapters":
                         try:
-                            self.show_chapters(highlight_index=self.current_chapter_index)
-                            ch_choice = IntPrompt.ask("输入序号跳转（0 取消）", default=0)
-                            if 0 < ch_choice <= len(self.current_chapters):
-                                self.current_chapter_index = ch_choice - 1
-                                chapter = self.current_chapters[self.current_chapter_index]
-                                console.print(f"[yellow]📄 正在跳转到第 {ch_choice} 章：{chapter.title}...[/yellow]")
-                                browser.go_to_chapter(
-                                    int(chapter.chapter_id),
-                                    chapter_title=chapter.title,
-                                    chapter_index=ch_choice - 1,
-                                    chapter_idx=chapter.chapter_idx
-                                )
-                                browser_navigated = True
-                                _save_reading_state(
-                                    self.current_book.book_id,
-                                    self.current_book.title,
-                                    self.current_book.author,
-                                    self.current_chapter_index,
-                                    self.current_chapters,
-                                )
-                                continue
+                            # 计算初始页码（当前章节所在页）
+                            page_size = 30
+                            current_page = self.current_chapter_index // page_size
+                            
+                            # 目录浏览循环
+                            while True:
+                                self.show_chapters(highlight_index=self.current_chapter_index, page=current_page)
+                                user_input = Prompt.ask("操作", default="0").strip().lower()
+                                
+                                if user_input == "0":
+                                    break  # 返回阅读
+                                elif user_input == "p" and current_page > 0:
+                                    current_page -= 1
+                                elif user_input == "n":
+                                    total_pages = (len(self.current_chapters) + page_size - 1) // page_size
+                                    if current_page < total_pages - 1:
+                                        current_page += 1
+                                elif user_input == "g":
+                                    # 跳页
+                                    total_pages = (len(self.current_chapters) + page_size - 1) // page_size
+                                    try:
+                                        target_page = IntPrompt.ask(f"跳转到第几页 (1-{total_pages})", default=current_page + 1)
+                                        if 1 <= target_page <= total_pages:
+                                            current_page = target_page - 1
+                                    except:
+                                        pass
+                                else:
+                                    # 尝试解析为章节序号
+                                    try:
+                                        ch_choice = int(user_input)
+                                        if 0 < ch_choice <= len(self.current_chapters):
+                                            self.current_chapter_index = ch_choice - 1
+                                            chapter = self.current_chapters[self.current_chapter_index]
+                                            console.print(f"[yellow]📄 正在跳转到第 {ch_choice} 章：{chapter.title}...[/yellow]")
+                                            browser.go_to_chapter(
+                                                int(chapter.chapter_id),
+                                                chapter_title=chapter.title,
+                                                chapter_index=ch_choice - 1,
+                                                chapter_idx=chapter.chapter_idx
+                                            )
+                                            browser_navigated = True
+                                            _save_reading_state(
+                                                self.current_book.book_id,
+                                                self.current_book.title,
+                                                self.current_book.author,
+                                                self.current_chapter_index,
+                                                self.current_chapters,
+                                            )
+                                            break  # 跳转后退出目录循环
+                                        else:
+                                            console.print(f"[red]无效序号，请输入 1-{len(self.current_chapters)}[/red]")
+                                    except ValueError:
+                                        console.print("[red]无效输入[/red]")
+                            continue  # 退出目录循环后，回到主循环重新提取内容
                         except Exception as e:
                             console.print(f"[red]⚠️ 章节选择异常: {e}[/red]")
                     elif result == "debug":

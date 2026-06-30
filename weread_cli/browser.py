@@ -490,32 +490,34 @@ class CDPBrowserManager:
 
         策略：通过 JS 修改 location 触发 SPA 内部路由，不触发完整页面重载。
         章节 URL 格式: /web/reader/{book_hash}k{chapter_hash}
-        注意: chapter_hash = weread_hash(chapter_idx)，不是 weread_hash(chapter_uid)
+        注意: chapter_hash = weread_hash(chapter_uid)
         """
         if not self.is_alive:
             return None
 
         try:
             if not self._book_loaded:
+                print(f"⚠️ 书籍未加载，无法跳转章节")
                 return None
 
-            # 清空旧 Canvas 文本
-            self._clear_canvas_text()
-
             # 构建完整章节 URL: {book_hash}k{chapter_hash}
-            # chapter_hash 使用 chapter_idx（API 返回的章节索引），不是 chapter_uid
+            # 使用 chapter_uid（章节唯一ID）来构建URL
             book_hash = weread_hash(self.state.book_id)
-            hash_input = chapter_idx if chapter_idx > 0 else chapter_uid
-            chapter_hash = weread_hash(hash_input)
+            # 使用 chapter_uid 构建 hash
+            chapter_hash = weread_hash(chapter_uid)
             target_path = f"/web/reader/{book_hash}k{chapter_hash}"
+            
+            # 调试信息
+            print(f"🔍 跳转参数: chapter_uid={chapter_uid}, chapter_index={chapter_index}, chapter_idx={chapter_idx}")
+            print(f"🔗 目标 URL: {target_path}")
 
-            # 通过 JS 修改 location 触发 SPA 路由，而非 page.goto()（会导致页面重载 + Canvas hook 丢失）
+            # 通过 JS 修改 location 触发 SPA 路由
             self._page.evaluate(f"() => window.location.href = '{target_path}'")
 
-            # 等待 SPA 路由完成 + Canvas 渲染
-            # 首次章节切换给更多时间
-            self._wait_for_canvas_text(timeout_ms=15000)
+            # 等待 SPA 路由完成和 Canvas 渲染
             self._page.wait_for_timeout(2000)
+            self._wait_for_canvas_text(timeout_ms=10000)
+            self._page.wait_for_timeout(1000)
 
             extracted_title = self._extract_chapter_title_from_canvas()
             self.state.chapter_uid = chapter_uid
