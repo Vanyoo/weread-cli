@@ -204,7 +204,7 @@ class CDPBrowserManager:
     def __init__(
         self,
         cookies,  # Dict[str, str] or List[dict]
-        mode: str = "headed",  # "headed" | "headless" | "cdp"
+        mode: str = "headless",  # "headless" | "headed" | "cdp"
         cdp_url: str = "http://localhost:9222",
     ):
         # 兼容 dict 和 Playwright 数组格式
@@ -320,6 +320,7 @@ class CDPBrowserManager:
                 self._minimize_window()
             
             self._add_canvas_init_script()
+            self._install_response_capture()
             self._inject_canvas_hook()
 
             return True
@@ -362,6 +363,9 @@ class CDPBrowserManager:
     @property
     def is_alive(self) -> bool:
         return self._page is not None
+
+    def _install_response_capture(self) -> None:
+        _install_response_capture(self._page)
 
     def _add_canvas_init_script(self) -> None:
         """Ensure the Canvas hook is installed before future page scripts run."""
@@ -414,7 +418,8 @@ class CDPBrowserManager:
             self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
             self._page.wait_for_timeout(3000)
 
-            # 注入 Canvas 文本拦截（页面加载后立即注入）
+            # 注入 Canvas 文本拦截和 chapter 响应捕获（页面加载后立即注入）
+            self._install_response_capture()
             self._inject_canvas_hook()
 
             # 提取书籍信息
@@ -1074,6 +1079,38 @@ class CDPBrowserManager:
             print(f"❌ 提取内容失败: {e}")
             return None
 
+    def get_decoded_chapter_content(self) -> Optional[str]:
+        """返回当前页面已捕获并解码的 chapter 正文。
+
+        仅处理浏览器当前页面已经收到的公开/已授权响应，不发起新的
+        chapter 请求。响应 framing 的容错解码见 `response_decoder`。
+        """
+        if not self.is_alive:
+            return None
+        try:
+            captured = self._page.evaluate(
+                "() => window.__WEREAD_RESPONSES__ || []"
+            ) or []
+            from .response_decoder import decode_response, html_to_text
+
+            texts = []
+            for item in captured:
+                raw = item.get("response", "")
+                if not raw:
+                    continue
+                decoded = decode_response(raw)
+                text = html_to_text(decoded.text) if re.search(r"<(?:html|body|p|div)\b", decoded.text, re.I) else decoded.text
+                if text.strip():
+                    texts.append(text.strip())
+            if not texts:
+                return None
+            result = "\n\n".join(texts)
+            result = re.sub(r"\n{3,}", "\n\n", result).strip()
+            return result if len(result) > 30 else None
+        except Exception as e:
+            debug_print(f"[响应解码] {e}")
+            return None
+
     def _inject_canvas_hook(self):
         """注入 Canvas 文本拦截脚本"""
         self._page.evaluate(CANVAS_TEXT_HOOK_SCRIPT)
@@ -1587,3 +1624,61 @@ class CDPBrowserManager:
             os.fsync(f.fileno())
         os.replace(tmp_path, str(target))
         return True
+
+
+# ── chapter 响应解码钩子 ─────────────────────────────────────
+# 该钩子只读取当前页面浏览器已经完成的 XHR/fetch 响应，用于把
+# 原本绘制到 Canvas 的正文恢复成终端可读文本。它不生成签名、不绕过
+# 登录/付费/试读限制，也不会主动请求其他章节。
+RESPONSE_CAPTURE_SCRIPT = """
+(() => {
+    if (window.__WEREAD_RESPONSE_CAPTURE_HOOKED__) return;
+    window.__WEREAD_RESPONSE_CAPTURE_HOOKED__ = true;
+    window.__WEREAD_RESPONSES__ = [];
+    const capture = (url, body, text) => {
+        if (!url || !String(url).includes('/web/book/chapter/e_')) return;
+        window.__WEREAD_RESPONSES__.push({url: String(url), body: body || '', response: text || ''});
+    };
+    const xhrOpen = XMLHttpRequest.prototype.open;
+    const xhrSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        this.__weread_url = String(url);
+        this.__weread_method = method;
+        return xhrOpen.call(this, method, url, ...rest);
+    };
+    XMLHttpRequest.prototype.send = function(body) {
+        const xhr = this;
+        const onDone = () => {
+            if (xhr.readyState === 4) {
+                let text = '';
+                try { text = xhr.responseText; } catch (_) {}
+                capture(xhr.__weread_url, body, text);
+            }
+        };
+        xhr.addEventListener('readystatechange', onDone);
+        return xhrSend.call(this, body);
+    };
+    const fetchApi = window.fetch.bind(window);
+    window.fetch = async function(...args) {
+        const request = args[0];
+        const options = args[1] || {};
+        const url = typeof request === 'string' ? request : (request && request.url) || '';
+        const body = typeof options.body === 'string' ? options.body : '';
+        const response = await fetchApi(...args);
+        if (url.includes('/web/book/chapter/e_')) {
+            response.clone().text().then(text => capture(url, body, text)).catch(() => {});
+        }
+        return response;
+    };
+})();
+"""
+
+
+def _install_response_capture(page) -> None:
+    if page is None:
+        return
+    page.add_init_script(RESPONSE_CAPTURE_SCRIPT)
+    try:
+        page.evaluate(RESPONSE_CAPTURE_SCRIPT)
+    except Exception:
+        pass

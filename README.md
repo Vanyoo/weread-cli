@@ -8,6 +8,7 @@
 - 🔄 **Cookie 自动刷新** — 每次登录检查自动刷新 `wr_skey`，主菜单支持手动刷新
 - 📚 **书架管理** — 查看完整书架，在线搜索
 - 📖 **CDP 阅读模式** — 通过 Chrome DevTools Protocol 连接浏览器，实时渲染提取文本
+- 🧩 **chapter 响应解码** — 捕获当前页面已授权的 `/web/book/chapter/e_*` 响应，容错还原 XHTML/CSS/正文，Canvas 作为 fallback
 - ⚡ **Loading 动画** — 所有 API 调用显示终端旋转动画
 - 💾 **阅读进度持久化** — 自动保存/恢复上次阅读进度
 
@@ -118,6 +119,10 @@ weread-cli/
 - 跳转章节
 - 翻页（上一页/下一页）
 - 通过 Canvas 钩子提取渲染后的文本
+
+**`response_decoder.py` — 请求响应解码**
+
+对微信读书 chapter 响应的短十六进制标记和 Base64 负载做容错还原。由于响应 framing 会随分片长度变化，解码器不会写死 `slice(32)`，而是保留候选偏移并按正文/XHTML/CSS 信号选择。
 
 **`canvas_extractor.py` — 文本提取**
 

@@ -126,7 +126,11 @@ class WeReadCLI:
         console.print("  3. 从 Firefox 导入 Cookie")
         console.print("  4. 从 Safari 导入 Cookie")
 
-        choice = Prompt.ask("请选择", choices=["1", "2", "3", "4"], default="1")
+        try:
+            choice = Prompt.ask("请选择", choices=["1", "2", "3", "4"], default="1")
+        except EOFError:
+            console.print("[yellow]当前终端无法接收交互输入，请在 TTY 中运行登录命令。[/yellow]")
+            return
 
         if choice == "1":
             success = self.login_manager.login_via_qr()
@@ -888,11 +892,15 @@ class WeReadCLI:
             console.print("  [cyan]6[/cyan] - 退出登录")
             console.print("  [cyan]0[/cyan] - 退出")
 
-            choice = Prompt.ask(
-                "请选择",
-                choices=["0", "1", "2", "3", "4", "5", "6"],
-                default="1"
-            )
+            try:
+                choice = Prompt.ask(
+                    "请选择",
+                    choices=["0", "1", "2", "3", "4", "5", "6"],
+                    default="1"
+                )
+            except EOFError:
+                console.print("[yellow]当前终端无法接收交互输入；请在 TTY 中运行命令。[/yellow]")
+                return
 
             if choice == "1":
                 self.show_bookshelf(interactive=True)
@@ -965,6 +973,9 @@ def main():
     if not cli.check_login():
         console.print("[yellow]未登录，请先登录[/yellow]\n")
         cli.login()
+        if not cli.check_login() and not sys.stdin.isatty():
+            console.print("[yellow]非交互环境无法完成登录；请使用 `weread-cli login` 在终端登录后重试。[/yellow]")
+            return
 
     # 主菜单
     cli.main_menu()

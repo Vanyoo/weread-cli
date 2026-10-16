@@ -259,8 +259,8 @@ class WeReadAPI:
 
     # ── CDP 浏览器（章节内容读取）────────────────────────────
 
-    def _ensure_browser(self) -> bool:
-        """确保浏览器已启动（默认使用有头模式，确保内容正常渲染）"""
+    def _ensure_browser(self, mode: str = "headless") -> bool:
+        """确保浏览器已启动；响应解码默认优先使用无头模式."""
         if self._browser and self._browser.is_alive:
             return True
 
@@ -269,7 +269,7 @@ class WeReadAPI:
             return False
 
         # 使用 headed 模式，确保微信读书内容正常渲染
-        self._browser = CDPBrowserManager(self._cookies, mode="headed")
+        self._browser = CDPBrowserManager(self._cookies, mode=mode)
         if not self._browser.start():
             self._browser = None
             return False
@@ -300,7 +300,16 @@ class WeReadAPI:
         # 跳转到目标章节（使用正确的索引）
         chapter_title = self._browser.go_to_chapter(chapter_uid, chapter_title="", chapter_index=chapter_index)
 
-        # 提取内容
+        # 优先使用浏览器已捕获的 chapter 响应解码内容；不主动请求其他章节
+        decoded = self._browser.get_decoded_chapter_content()
+        if decoded and len(decoded) > 50:
+            return BookContent(
+                chapter_id=chapter_id,
+                title=chapter_title or f"Chapter {chapter_id}",
+                content=decoded,
+            )
+
+        # 提取内容（Canvas fallback）
         result = self._browser.get_content_with_title()
         if result and result.get("textLength", 0) > 50:
             return BookContent(
